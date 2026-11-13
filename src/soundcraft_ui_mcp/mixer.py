@@ -22,6 +22,11 @@ KEEPALIVE_SEC = 1.0
 RECONNECT_SEC = 2.0
 SYNC_QUIET_SEC = 0.3
 ECHO_TOLERANCE = 2e-3
+LIST_TIMEOUT_SEC = 1.5
+
+# Resource lists the mixer sends on request (from soundcraft-ui). "keyed" lists carry the
+# owner name as 2nd field, e.g. "SNAPSHOTLIST^<show>^snap1^snap2".
+RESOURCE_LISTS = {"PLISTS": False, "PLIST_TRACKS": True, "SHOWLIST": False, "SNAPSHOTLIST": True, "CUELIST": True}
 
 
 class MixerNotReady(RuntimeError):
@@ -92,6 +97,8 @@ class MixerClient:
         self.vu_at: float | None = None
         self.rta: list[float] | None = None
         self.rta_at: float | None = None
+        self.lists: dict[str, list[str]] = {}
+        self._list_waiters: dict[str, list[asyncio.Future[list[str]]]] = {}
 
     # --- lifecycle -----------------------------------------------------------
 
@@ -203,6 +210,9 @@ class MixerClient:
             if line.startswith("RTA^"):
                 self._handle_rta(line)
                 continue
+            if line.split("^", 1)[0] in RESOURCE_LISTS:
+                self._handle_list(line)
+                continue
             cmd = parse_line(line)
             if cmd is None:
                 continue
@@ -224,6 +234,16 @@ class MixerClient:
             self.rta_at = time.monotonic()
         except ValueError as exc:
             log.debug("bad RTA frame: %s", exc)
+
+    def _handle_list(self, line: str) -> None:
+        parts = line.split("^")
+        n = 2 if RESOURCE_LISTS[parts[0]] else 1
+        address = "^".join(parts[:n])
+        items = [p for p in parts[n:] if p]
+        self.lists[address] = items
+        for fut in self._list_waiters.pop(address, []):
+            if not fut.done():
+                fut.set_result(items)
 
     def _check_external_change(self, path: str, value: float) -> None:
         for ramp in list(self._ramps.values()):
@@ -256,6 +276,47 @@ class MixerClient:
     def sets(self, path: str, value: str) -> None:
         self._send(build_sets(path, value))
         self.state[path] = value
+
+    def send_command(self, message: str) -> None:
+        """Send a raw non-state command such as ``MEDIA_PLAY`` or ``LOADSNAPSHOT^show^snap``."""
+        self._send(message)
+
+    async def request_list(self, request: str, address: str, timeout: float = LIST_TIMEOUT_SEC) -> list[str]:
+        """Send a list request and wait for the reply addressed ``address`` (e.g. ``SNAPSHOTLIST^Default``).
+
+        The real mixer does not answer at all when some lists are empty (e.g. no cues), so a timeout
+        means "empty".
+        """
+        fut: asyncio.Future[list[str]] = asyncio.get_running_loop().create_future()
+        self._list_waiters.setdefault(address, []).append(fut)
+        self._send(request)
+        try:
+            return await asyncio.wait_for(fut, timeout)
+        except TimeoutError:
+            self.lists.setdefault(address, [])
+            return []
+        finally:
+            waiters = self._list_waiters.get(address, [])
+            if fut in waiters:
+                waiters.remove(fut)
+
+    async def playlists(self) -> dict[str, list[str]]:
+        names = await self.request_list("MEDIA_GET_PLISTS", "PLISTS")
+        tracks = await asyncio.gather(
+            *(self.request_list(f"MEDIA_GET_PLIST_TRACKS^{n}", f"PLIST_TRACKS^{n}") for n in names)
+        )
+        return dict(zip(names, tracks, strict=True))
+
+    async def shows(self) -> dict[str, dict[str, list[str]]]:
+        names = await self.request_list("SHOWLIST", "SHOWLIST")
+        result: dict[str, dict[str, list[str]]] = {}
+        for name in names:
+            snaps, cues = await asyncio.gather(
+                self.request_list(f"SNAPSHOTLIST^{name}", f"SNAPSHOTLIST^{name}"),
+                self.request_list(f"CUELIST^{name}", f"CUELIST^{name}"),
+            )
+            result[name] = {"snapshots": snaps, "cues": cues}
+        return result
 
     # --- ramps ---------------------------------------------------------------
 
