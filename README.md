@@ -35,11 +35,13 @@ claude mcp add soundcraft -- uv --directory /path/to/soundcraft-ui-mcp run sound
 ### Streamable HTTP
 
 ```bash
-uv run soundcraft-ui-mcp --transport http                     # http://127.0.0.1:8000/mcp
+uv run soundcraft-ui-mcp --transport http                     # http://127.0.0.1:8000/mcp, no auth
 MCP_AUTH_TOKEN=xxxx uv run soundcraft-ui-mcp --transport http --host 0.0.0.0
+uv run soundcraft-ui-mcp --transport http --host 0.0.0.0 --no-auth
 ```
 
-- To listen on any address other than localhost, you must set `MCP_AUTH_TOKEN`. Clients then connect with an `Authorization: Bearer xxxx` header.
+- On localhost, no authentication is needed.
+- To listen on any other address, either set `MCP_AUTH_TOKEN` (clients then send an `Authorization: Bearer xxxx` header) or pass `--no-auth` (or set `MCP_HTTP_NO_AUTH=1`) to serve without authentication. With `--no-auth`, anyone on the same network can control the mixer, so the server logs a warning at startup. Setting both is refused.
 - `GET /healthz` reports whether the server is connected to the mixer.
 
 ## Safety
@@ -83,6 +85,7 @@ Measured on a Ui12 with the default settings: -inf to -30 dB takes about 7 s, -i
 | `MIXER_IP` | `192.168.12.22` | Mixer IP address |
 | `MCP_HTTP_HOST` / `MCP_HTTP_PORT` | `127.0.0.1` / `8000` | HTTP listen address and port |
 | `MCP_AUTH_TOKEN` | (none) | Bearer token for HTTP |
+| `MCP_HTTP_NO_AUTH` | (unset) | `1` serves HTTP without authentication on a non-localhost address (same as `--no-auth`) |
 | `MAX_FADER_DB` | `0` | Fader limit |
 | `MAX_AUX_SEND_DB` | `0` | AUX send limit |
 | `MAX_EQ_BOOST_DB` | `6` | EQ boost limit |
