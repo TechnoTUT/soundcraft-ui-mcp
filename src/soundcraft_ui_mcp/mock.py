@@ -184,6 +184,7 @@ def default_state(model: str = "ui12") -> State:
     st.update({"m.gate.enabled": 0.0, "m.gate.bypass": 1.0})
     st.update(afs_defaults("m"))
     st["var.rta"] = ""
+    st.update({"var.currentShow": "Default", "var.currentSnapshot": "* Init *", "var.currentCue": ""})
     return st
 
 
@@ -198,6 +199,28 @@ def afs_defaults(prefix: str) -> State:
     }
     st.update({f"{prefix}.afs.eq.{i}": "1000.0000000000,116.0000000000,0.0000000000,0" for i in range(12)})
     return st
+
+
+# keys that are not part of a show snapshot / cue
+SNAPSHOT_EXCLUDED_PREFIXES = ("var.", "settings.")
+SNAPSHOT_EXCLUDED_KEYS = {"model", "firmware", "flavour", "schema", "type"}
+
+
+def snapshot_of(state: State) -> State:
+    return {
+        k: v
+        for k, v in state.items()
+        if k not in SNAPSHOT_EXCLUDED_KEYS and not k.startswith(SNAPSHOT_EXCLUDED_PREFIXES)
+    }
+
+
+def _channel_prefix(path: str) -> str:
+    parts = path.split(".")
+    return parts[0] if parts[0] == "m" else ".".join(parts[:2])
+
+
+def state_line(path: str, value: float | str) -> str:
+    return build_sets(path, value) if isinstance(value, str) else build_setd(path, value)
 
 
 def state_lines(state: State) -> list[str]:
@@ -228,6 +251,10 @@ class MockMixer:
         self._levels: dict[str, list[dict[str, float]]] | None = None
         self._meter_task: asyncio.Task[None] | None = None
         self._t0 = time.monotonic()
+        # shows -> {"snapshots": {name: state}, "cues": {name: state}}
+        self.shows: dict[str, dict[str, dict[str, State]]] = {
+            "Default": {"snapshots": {"* Init *": snapshot_of(self.state)}, "cues": {}}
+        }
 
     # --- meters ---------------------------------------------------------------
 
@@ -301,7 +328,8 @@ class MockMixer:
             self.received.append(line)
             cmd = parse_line(line)
             if cmd is None:
-                continue  # ALIVE and other non-state commands
+                await self._command(sender, line)
+                continue
             self.state[cmd.path] = cmd.value
             log.info("%s = %s", cmd.path, cmd.value)
             await self.broadcast(line, exclude=None if self.echo else sender)
@@ -317,6 +345,88 @@ class MockMixer:
         self.state[path] = value
         line = build_sets(path, value) if isinstance(value, str) else build_setd(path, value)
         await self.broadcast(line)
+
+    # --- non-state commands -----------------------------------------------------
+
+    async def reply(self, client: ServerConnection, line: str) -> None:
+        with contextlib.suppress(websockets.ConnectionClosed):
+            await client.send(frame(line))
+
+    async def apply(self, changes: State) -> None:
+        """Change several values as the mixer itself would (broadcast to every client)."""
+        lines = []
+        for path, value in changes.items():
+            if self.state.get(path) != value:
+                self.state[path] = value
+                lines.append(state_line(path, value))
+        for i in range(0, len(lines), FRAME_LINES):
+            await self.broadcast("\n".join(lines[i : i + FRAME_LINES]))
+
+    async def _command(self, sender: ServerConnection, line: str) -> None:
+        name, *args = line.split("^")
+        handler = getattr(self, f"_cmd_{name.lower()}", None)
+        if handler is None:
+            if name not in ("ALIVE", ""):
+                log.info("ignored command: %s", line)
+            return
+        log.info("command: %s", line)
+        await handler(sender, *args)
+
+    # shows / snapshots / cues
+
+    async def _cmd_showlist(self, sender: ServerConnection) -> None:
+        await self.reply(sender, "SHOWLIST^" + "^".join(self.shows))
+
+    async def _list_reply(self, sender: ServerConnection, kind: str, show: str) -> None:
+        items = list(self.shows.get(show, {}).get(kind, {}))
+        if items:  # the real mixer does not answer when the list is empty
+            await self.reply(sender, f"{kind[:-1].upper()}LIST^{show}^" + "^".join(items))
+
+    async def _cmd_snapshotlist(self, sender: ServerConnection, show: str = "") -> None:
+        await self._list_reply(sender, "snapshots", show)
+
+    async def _cmd_cuelist(self, sender: ServerConnection, show: str = "") -> None:
+        await self._list_reply(sender, "cues", show)
+
+    async def _cmd_loadshow(self, sender: ServerConnection, show: str = "") -> None:
+        if show in self.shows:
+            await self.apply({"var.currentShow": show, "var.currentSnapshot": "", "var.currentCue": ""})
+
+    def _recall_changes(self, stored: State) -> State:
+        """Values to apply when recalling, skipping channels marked as safe."""
+        safe = {_channel_prefix(k) for k, v in self.state.items() if k.endswith(".safe") and v}
+        return {k: v for k, v in stored.items() if _channel_prefix(k) not in safe}
+
+    async def _recall(self, kind: str, show: str, name: str) -> None:
+        stored = self.shows.get(show, {}).get(kind, {}).get(name)
+        if stored is None:
+            log.info("no %s %r in show %r", kind[:-1], name, show)
+            return
+        changes = self._recall_changes(stored)
+        if kind == "snapshots":
+            changes.update({"var.currentShow": show, "var.currentSnapshot": name, "var.currentCue": ""})
+        else:
+            changes.update({"var.currentShow": show, "var.currentCue": name})
+        await self.apply(changes)
+
+    async def _cmd_loadsnapshot(self, sender: ServerConnection, show: str = "", name: str = "") -> None:
+        await self._recall("snapshots", show, name)
+
+    async def _cmd_loadcue(self, sender: ServerConnection, show: str = "", name: str = "") -> None:
+        await self._recall("cues", show, name)
+
+    async def _store(self, kind: str, show: str, name: str) -> None:
+        if not show or not name:
+            return
+        self.shows.setdefault(show, {"snapshots": {}, "cues": {}})[kind][name] = snapshot_of(self.state)
+        key = "var.currentSnapshot" if kind == "snapshots" else "var.currentCue"
+        await self.apply({"var.currentShow": show, key: name})
+
+    async def _cmd_savesnapshot(self, sender: ServerConnection, show: str = "", name: str = "") -> None:
+        await self._store("snapshots", show, name)
+
+    async def _cmd_savecue(self, sender: ServerConnection, show: str = "", name: str = "") -> None:
+        await self._store("cues", show, name)
 
     def save(self, path: Path) -> None:
         path.write_text(json.dumps(self.state, indent=1, ensure_ascii=False))
