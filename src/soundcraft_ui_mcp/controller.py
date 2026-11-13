@@ -23,6 +23,9 @@ from .paths import (
     DYN_TYPES,
     EQ_BANDS,
     EQ_TYPES,
+    MUTE_ALL_BIT,
+    MUTE_FX_BIT,
+    MUTE_GROUPS,
     AddressError,
     Channel,
     aux_pan_ids,
@@ -30,8 +33,10 @@ from .paths import (
     capabilities,
     channel_name,
     check_aux_bus,
+    group_mute_reason,
     make_channel,
     master_ids,
+    mute_status,
     send_id,
     stereo_partner,
 )
@@ -184,10 +189,13 @@ class MixerController:
             "number": ch.number,
             "name": channel_name(ch, st),
             "fader_db": db_repr(self._fader_db(self._fader_path(ch))),
-            "mute": _bool(st.get(f"{ch.id}.mute")),
+            "mute": mute_status(ch, st)[0],
             "solo": _bool(st.get(f"{ch.id}.solo")),
             "pan": self._pan(f"{ch.id}.pan"),
         }
+        reason = mute_status(ch, st)[1]
+        if reason and reason != "channel":
+            info["mute_reason"] = reason
         partner = stereo_partner(ch, st)
         if partner is not None:
             info["stereo_linked_with"] = partner.number
@@ -202,6 +210,10 @@ class MixerController:
                 "pan": self._pan("m.pan"),
             },
         }
+        active = int(self.mixer.get_float("mgmask"))
+        groups = [f"group {i + 1}" for i in range(MUTE_GROUPS) if active >> i & 1]
+        groups += ["MUTE FX"] * (active >> MUTE_FX_BIT & 1) + ["MUTE ALL"] * (active >> MUTE_ALL_BIT & 1)
+        out["active_mute_groups"] = groups
         for type_ in ("input", "line", "player", "fx", "sub", "aux"):
             out[type_] = [
                 self._channel_summary(Channel(type_, n))  # type: ignore[arg-type]
@@ -249,21 +261,30 @@ class MixerController:
             fade_ms=fade_ms,
         )
 
-    def _soft_unmute(self, *, key: str, label: str, mute_paths: list[str], level_paths: list[str]) -> dict[str, Any]:
+    def _soft_unmute(
+        self,
+        *,
+        key: str,
+        label: str,
+        muted: bool,
+        unmute_writes: list[tuple[str, float]],
+        level_paths: list[str],
+        note: str | None = None,
+    ) -> dict[str, Any]:
         """Unmute without a jump: drop the level to -inf, unmute, then ramp back slowly."""
-        st = self.mixer.state
-        if not any(_bool(st.get(p)) for p in mute_paths):
+        if not muted:
             return {"target": label, "mode": "既にミュート解除されています"}
+        extra = {"note": note} if note else {}
         restore_db = self._fader_db(level_paths[0])
         if restore_db <= self.s.ramp_floor_db:
-            for p in mute_paths:
-                self.mixer.setd(p, 0)
-            return {"target": label, "mode": "ミュート解除 (レベルが低いため即時)"}
+            for p, v in unmute_writes:
+                self.mixer.setd(p, v)
+            return {"target": label, "mode": "ミュート解除 (レベルが低いため即時)", **extra}
         self.mixer.cancel_ramps_for(level_paths)
         for p in level_paths:
             self.mixer.setd(p, 0.0)
-        for p in mute_paths:
-            self.mixer.setd(p, 0)
+        for p, v in unmute_writes:
+            self.mixer.setd(p, v)
         ramp = self.mixer.start_ramp(
             key=key,
             label=f"{label} (ミュート解除後の復帰)",
@@ -279,23 +300,40 @@ class MixerController:
             "mode": "ミュート解除し、元のレベルまでゆっくり戻しています",
             "restore_to_db": restore_db,
             "estimated_sec": round(ramp.estimated_sec, 1),
+            **extra,
         }
 
     def set_mute(self, ch: Channel, muted: bool) -> dict[str, Any]:
         if ch.is_master:
             raise AddressError("master にはミュートがありません。フェーダーで下げてください")
-        ids = master_ids(ch, self.mixer.state)
-        mute_paths = [f"{cid}.mute" for cid in ids]
+        st = self.mixer.state
+        ids = master_ids(ch, st)
+        group = group_mute_reason(ch, st)
         if muted:
+            # Same as the web app: always clear forceunmute (so an active group mutes again),
+            # and set the channel mute only when no group is muting it.
             self.mixer.cancel_ramps_for([f"{cid}.mix" for cid in ids])
-            for p in mute_paths:
-                self.mixer.setd(p, 1)
-            return {"target": ch.label(), "mode": "即時にミュートしました", "paths": mute_paths}
+            for cid in ids:
+                if not group:
+                    self.mixer.setd(f"{cid}.mute", 1)
+                if _bool(st.get(f"{cid}.forceunmute")) or group:
+                    self.mixer.setd(f"{cid}.forceunmute", 0)
+            mode = "即時にミュートしました" + (f" ({group} によるミュートに戻しました)" if group else "")
+            return {"target": ch.label(), "mode": mode}
+        effective, _reason = mute_status(ch, st)
+        if group:
+            writes = [(f"{cid}.forceunmute", 1.0) for cid in ids] + [(f"{cid}.mute", 0.0) for cid in ids]
+            note = f"{group} でミュートされていたため、forceunmute で個別に解除しました"
+        else:
+            writes = [(f"{cid}.mute", 0.0) for cid in ids]
+            note = None
         return self._soft_unmute(
             key=f"fader:{ch.id}",
             label=ch.label(),
-            mute_paths=mute_paths,
+            muted=effective,
+            unmute_writes=writes,
             level_paths=[f"{cid}.mix" for cid in ids],
+            note=note,
         )
 
     def set_solo(self, ch: Channel, solo: bool) -> dict[str, Any]:
@@ -389,7 +427,11 @@ class MixerController:
                 self.mixer.setd(p, 1)
             return {"target": label, "mode": "即時にミュートしました"}
         return self._soft_unmute(
-            key=f"aux:{send_id(source, bus)}", label=label, mute_paths=mute_paths, level_paths=level_paths
+            key=f"aux:{send_id(source, bus)}",
+            label=label,
+            muted=any(_bool(self.mixer.state.get(p)) for p in mute_paths),
+            unmute_writes=[(p, 0.0) for p in mute_paths],
+            level_paths=level_paths,
         )
 
     def set_aux_send_pan(self, bus: int, source: Channel, pan: float) -> dict[str, Any]:

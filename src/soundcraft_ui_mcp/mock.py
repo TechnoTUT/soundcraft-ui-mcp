@@ -93,6 +93,7 @@ def default_state(model: str = "ui12") -> State:
         "m.name": "MASTER",
         "settings.multiplesolo": 0.0,
         "settings.solotype": 1.0,
+        "mgmask": 0.0,
     }
     n_aux = caps["aux"]
     n_fx = caps["fx"]
@@ -135,6 +136,7 @@ def default_state(model: str = "ui12") -> State:
                 st[f"{cid}.eq.hpf.freq"] = 0.0
                 st[f"{cid}.eq.bypass"] = 0.0
             if code in "ilpfsa":
+                st.update({f"{cid}.mgmask": 0.0, f"{cid}.forceunmute": 0.0})
                 st.update({f"{cid}.dyn.{p}": v for p, v in DYN_DEFAULTS.items()})
                 st.update({f"{cid}.gate.{p}": v for p, v in GATE_DEFAULTS.items()})
             if code == "i":

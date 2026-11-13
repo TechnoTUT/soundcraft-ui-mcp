@@ -71,6 +71,7 @@ Measured on a Ui12 with the default settings: -inf to -30 dB takes about 7 s, -i
 | Graphic EQ (AUX / master) | `get_graphic_eq`, `set_graphic_eq_band`, `reset_graphic_eq`, `set_graphic_eq_bypass` |
 
 - Channel numbers start at 1. An operation on a stereo-linked channel also applies to its paired channel.
+- Mute state takes mute groups, MUTE ALL and MUTE FX into account. To unmute a channel that a group is muting, the server sets `forceunmute`, the same way the mixer's web app does. Muting always clears `forceunmute`. `get_mixer_overview` reports `active_mute_groups`, and a `mute_reason` for each channel muted by a group.
 - Compressor and gate settings are written as the mixer's internal values (0 to 1). `get_dynamics` also returns approximate dB values (`readable`), converted with the formulas from the mixer's web app.
 - `get_meters` returns the latest meter frame in dB (-80 = silence): pre, post-processing and post-fader levels, plus compressor gain reduction. When there is no signal, the real mixer only sends meter data when a level changes, so `age_sec` can be large.
 - The graphic EQ has 31 bands from 20 Hz to 20 kHz, ±15 dB. Cuts take effect immediately and boosts fade in slowly. `reset_graphic_eq` requires `confirm=true`, because it would wipe the venue's room tuning.

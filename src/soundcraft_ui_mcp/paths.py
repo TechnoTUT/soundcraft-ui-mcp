@@ -165,3 +165,45 @@ def default_name(ch: Channel) -> str:
 def channel_name(ch: Channel, state: Mapping[str, Any]) -> str:
     name = state.get(f"{ch.id}.name")
     return name if isinstance(name, str) and name else default_name(ch)
+
+
+# --- mute groups ---------------------------------------------------------------
+# From the mixer's web app: the global "mgmask" holds the active mute groups (bits 0..5),
+# MUTE FX (bit 22) and MUTE ALL (bit 23). "<ch>.mgmask" holds the groups a channel belongs to.
+# Unmuting a channel that is muted by a group sets "<ch>.forceunmute" instead of clearing "mute".
+
+MUTE_GROUPS = 6
+MUTE_FX_BIT = 22
+MUTE_ALL_BIT = 23
+
+
+def _int(v: Any) -> int:
+    return int(v) if isinstance(v, (int, float)) else 0
+
+
+def group_mute_reason(ch: Channel, state: Mapping[str, Any]) -> str | None:
+    """Why a mute group currently mutes this channel (None if no group does)."""
+    if ch.is_master:
+        return None
+    active = _int(state.get("mgmask", 0))
+    if active >> MUTE_ALL_BIT & 1:
+        return "MUTE ALL"
+    if ch.type == "fx" and active >> MUTE_FX_BIT & 1:
+        return "MUTE FX"
+    member = _int(state.get(f"{ch.id}.mgmask", 0)) & active
+    groups = [str(i + 1) for i in range(MUTE_GROUPS) if member >> i & 1]
+    return f"mute group {','.join(groups)}" if groups else None
+
+
+def mute_status(ch: Channel, state: Mapping[str, Any]) -> tuple[bool, str | None]:
+    """Effective mute state of a channel on the master bus and the reason for it."""
+    direct = bool(_int(state.get(f"{ch.id}.mute", 0)))
+    group = group_mute_reason(ch, state)
+    forced = bool(_int(state.get(f"{ch.id}.forceunmute", 0)))
+    if group and forced:
+        return False, f"{group} を forceunmute で個別に解除中"
+    if direct:
+        return True, "channel"
+    if group:
+        return True, group
+    return False, None

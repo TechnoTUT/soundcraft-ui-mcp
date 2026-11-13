@@ -15,7 +15,7 @@ from typing import Any
 
 from . import converters as cv
 from .meters import RTA_BANDS, rta_frequencies
-from .paths import CAPABILITIES
+from .paths import CAPABILITIES, Channel, mute_status
 
 SILENT = -math.inf
 HW_GAIN_DEFAULT_DB = 25.5  # -6 + 63 * 0.5
@@ -157,12 +157,13 @@ class SignalModel:
         for type_, code in (("input", "i"), ("line", "l"), ("player", "p")):
             for k in range(caps[type_]):
                 cid = f"{code}.{k}"
+                ch = Channel(type_, k + 1)  # type: ignore[arg-type]
                 pre = self._source_level((type_, k + 1), t)
                 if type_ == "input" and pre != SILENT:
                     pre += -6 + 63 * _f(state, f"{cid}.gain", 0.5) - HW_GAIN_DEFAULT_DB
                 processed = pre + self._eq_effect(state, cid) if pre != SILENT else SILENT
                 dyn_in, post, reduction = self._dynamics(state, cid, processed)
-                muted = bool(_f(state, f"{cid}.mute"))
+                muted = mute_status(ch, state)[0]
                 pf = SILENT if muted or post == SILENT else post + self._fader_db(state, f"{cid}.mix")
                 out[type_].append(
                     {
@@ -197,7 +198,7 @@ class SignalModel:
             cid = f"f.{k}"
             wet = db_sum(fx_in[k])
             post = wet - 6 if wet != SILENT else SILENT  # effect return
-            muted = bool(_f(state, f"{cid}.mute"))
+            muted = mute_status(Channel("fx", k + 1), state)[0]
             pf = SILENT if muted or post == SILENT else post + self._fader_db(state, f"{cid}.mix")
             out["fx"].append(self._stereo_entry(post, pf))
             add(pf, 0.5, master_l, master_r)
@@ -205,7 +206,7 @@ class SignalModel:
         for k in range(caps["sub"]):
             cid = f"s.{k}"
             post = db_sum(sub_in.get(k, []))
-            muted = bool(_f(state, f"{cid}.mute"))
+            muted = mute_status(Channel("sub", k + 1), state)[0]
             pf = SILENT if muted or post == SILENT else post + self._fader_db(state, f"{cid}.mix")
             out["sub"].append(self._stereo_entry(post, pf))
             add(pf, _f(state, f"{cid}.pan", 0.5), master_l, master_r)
@@ -215,7 +216,7 @@ class SignalModel:
             post = db_sum(aux_in[k])
             if post != SILENT:
                 post += self._geq_effect(state, f"{cid}.eq.peak.", f"{cid}.eq.bypass")
-            muted = bool(_f(state, f"{cid}.mute"))
+            muted = mute_status(Channel("aux", k + 1), state)[0]
             pf = SILENT if muted or post == SILENT else post + self._fader_db(state, f"{cid}.mix")
             out["aux"].append(
                 {"post_db": post, "post_fader_db": pf, "dyn_in_db": post, "dyn_out_db": post, "comp_reduction_db": 0}
