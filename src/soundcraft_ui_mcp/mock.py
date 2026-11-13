@@ -91,6 +91,8 @@ def default_state(model: str = "ui12") -> State:
         "m.pan": 0.5,
         "m.dim": 0.0,
         "m.name": "MASTER",
+        "settings.multiplesolo": 0.0,
+        "settings.solotype": 1.0,
     }
     n_aux = caps["aux"]
     n_fx = caps["fx"]

@@ -301,10 +301,20 @@ class MixerController:
     def set_solo(self, ch: Channel, solo: bool) -> dict[str, Any]:
         if ch.is_master:
             raise AddressError("master はソロできません")
-        paths = [f"{cid}.solo" for cid in master_ids(ch, self.mixer.state)]
+        st = self.mixer.state
+        paths = [f"{cid}.solo" for cid in master_ids(ch, st)]
+        cleared: list[str] = []
+        if solo and not _bool(st.get("settings.multiplesolo", 0)):
+            # Single-solo mode is enforced by the client (as the mixer's web app does), not by the mixer
+            cleared = sorted(k for k, v in st.items() if k.endswith(".solo") and _bool(v) and k not in paths)
+            for p in cleared:
+                self.mixer.setd(p, 0)
         for p in paths:
             self.mixer.setd(p, 1 if solo else 0)
-        return {"target": ch.label(), "solo": solo, "paths": paths}
+        result: dict[str, Any] = {"target": ch.label(), "solo": solo, "paths": paths}
+        if cleared:
+            result["cleared_other_solos"] = cleared
+        return result
 
     def set_pan(self, ch: Channel, pan: float) -> dict[str, Any]:
         path = f"{ch.id}.pan"

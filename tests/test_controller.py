@@ -186,3 +186,18 @@ def test_readable_dynamics(ctl):
     d = ctl.get_dynamics(ctl.channel("input", 1))["readable"]
     assert d["compressor_outgain_db"] == 0
     assert d["compressor_gain_db"] == 0
+
+
+async def test_single_solo_mode_clears_other_solos(ctl, mixer):
+    ctl.set_solo(ctl.channel("input", 3), True)
+    res = ctl.set_solo(ctl.channel("input", 4), True)
+    assert res["cleared_other_solos"] == ["i.2.solo"]
+    assert mixer.get("i.2.solo") == 0 and mixer.get("i.3.solo") == 1
+
+
+async def test_multiple_solo_mode_keeps_other_solos(ctl, mixer):
+    mixer.state["settings.multiplesolo"] = 1.0
+    ctl.set_solo(ctl.channel("input", 3), True)
+    res = ctl.set_solo(ctl.channel("input", 4), True)
+    assert "cleared_other_solos" not in res
+    assert mixer.get("i.2.solo") == 1 and mixer.get("i.3.solo") == 1
