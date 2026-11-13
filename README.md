@@ -97,6 +97,13 @@ For development without hardware, `soundcraft-ui-mock` runs a WebSocket server t
 
 The mock also produces meter data. A small signal model (source → input gain → EQ → gate → compressor → fader/mute → master, AUX, FX and sub buses) generates `VU2` meter frames and 120-band `RTA` spectrum frames, so the meters react to changes in gain, EQ, dynamics, faders, mutes, sends and the AUX/master graphic EQs. The `demo` signal profile simulates a DJ setup: a stereo DJ mixer on inputs 1/2, a mic talking in bursts on input 3, and background music on the player. As on the real mixer, `VU2` frames are only sent when a level changes.
 
+The mock also emulates the mixer's non-state commands, using the same command strings as soundcraft-ui:
+
+- **Shows, snapshots and cues:** `SHOWLIST` / `SNAPSHOTLIST` / `CUELIST` replies (an empty list gets no reply, as on the real mixer), plus `LOADSHOW` and saving/loading snapshots and cues. A recall applies every value at once, broadcasts the changes and skips channels marked safe.
+- **USB media player:** demo playlists, `MEDIA_GET_PLISTS` / `MEDIA_GET_PLIST_TRACKS`, switching playlists and tracks, play / pause / stop / next / previous, track position updates, and the end of a track in manual or auto play mode. The player channels only carry signal while playing.
+- **2-track USB recorder:** `RECTOGGLE`. A finished take is added to a `Recordings` playlist.
+- **No USB stick:** `--no-usb` reproduces a Ui12 without a USB stick, where play and record are ignored.
+
 The state includes the AUX and master graphic EQs (`eq.peak.*`), the master stereo compressor and gate, the feedback suppression (`afs.*`) keys, and `var.rta`, which selects the channel the RTA analyses.
 
 ```bash
@@ -113,6 +120,7 @@ MIXER_IP=127.0.0.1:8080 uv run soundcraft-ui-mcp            # point the MCP serv
 | `--echo` | Also echo commands back to the client that sent them |
 | `--signal demo\|silent` | Simulated input signals for the meters (default `demo`) |
 | `--vu-rate` / `--rta-rate` | Meter / spectrum frames per second (default 10; 0 = off) |
+| `--no-usb` | Behave as if no USB stick is inserted |
 
 To snapshot a real mixer's state (read-only) and replay it in the mock:
 
@@ -121,7 +129,9 @@ uv run soundcraft-ui-mock dump --from 192.168.12.22 -o state.json
 uv run soundcraft-ui-mock --state state.json
 ```
 
-In tests, `MockMixer.set_external(path, value)` simulates someone changing a value on the mixer's own web UI.
+In tests, `MockMixer.set_external(path, value)` simulates someone changing a value on the mixer's own web UI. `MockMixer(player_speed=10)` plays tracks faster.
+
+The synthetic state contains every state key seen on a real Ui12; `tests/ui12_key_patterns.txt` (key names only) guards this. `tests/test_mock_contract.py` checks that every state write and raw command the MCP server may need is understood by the mock.
 
 ## Development
 
