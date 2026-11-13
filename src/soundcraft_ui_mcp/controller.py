@@ -563,6 +563,138 @@ class MixerController:
             self.mixer.setd(f"{cid}.{key}.bypass", 1 if bypass else 0)
         return {"target": ch.label(), "section": section, "bypass": bypass}
 
+    # --- graphic EQ (AUX / master) ---------------------------------------------
+
+    def _geq_prefixes(self, target: Channel, side: str = "both") -> list[str]:
+        """State prefixes (ending with '.') of the graphic EQ bands to write."""
+        st = self.mixer.state
+        if target.is_master:
+            if side not in ("both", "left", "right"):
+                raise ValueError("side は both / left / right のいずれかです")
+            linked = _bool(st.get("m.eq.linked", 1))
+            if linked or side == "both":
+                return ["m.eq.peak.l.", "m.eq.peak.r."]
+            return ["m.eq.peak.l." if side == "left" else "m.eq.peak.r."]
+        if target.type != "aux":
+            raise AddressError("グラフィック EQ があるのは aux と master だけです")
+        return [f"{cid}.eq.peak." for cid in master_ids(target, st)]
+
+    def get_graphic_eq(self, target: Channel) -> dict[str, Any]:
+        st = self.mixer.state
+        if target.is_master:
+            sides = {"left": "m.eq.peak.l.", "right": "m.eq.peak.r."}
+            bypass = _bool(st.get("m.eq.bypass"))
+            linked = _bool(st.get("m.eq.linked", 1))
+        elif target.type == "aux":
+            sides = {"mono": f"{target.id}.eq.peak."}
+            bypass = _bool(st.get(f"{target.id}.eq.bypass"))
+            linked = None
+        else:
+            raise AddressError("グラフィック EQ があるのは aux と master だけです")
+        result: dict[str, Any] = {"target": target.label(), "bypass": bypass}
+        if linked is not None:
+            result["linked"] = linked
+        for name, prefix in sides.items():
+            if name == "right" and linked:
+                continue
+            gains = [
+                cv.value_to_geq_db(self.mixer.get_float(f"{prefix}{i}", 0.5)) for i in range(len(cv.GEQ_FREQUENCIES))
+            ]
+            result["bands" if name in ("mono", "left") else "bands_right"] = [
+                {"band": i + 1, "hz": f, "gain_db": g}
+                for i, (f, g) in enumerate(zip(cv.GEQ_FREQUENCIES, gains, strict=True))
+            ]
+        result["non_flat"] = [b for b in result["bands"] if b["gain_db"] != 0]
+        return result
+
+    def set_graphic_eq_band(
+        self,
+        target: Channel,
+        gain_db: float,
+        band: int | None = None,
+        frequency_hz: float | None = None,
+        side: str = "both",
+        confirm: bool = False,
+    ) -> dict[str, Any]:
+        if (band is None) == (frequency_hz is None):
+            raise ValueError("band (1〜31) と frequency_hz のどちらか一方を指定してください")
+        if band is None:
+            assert frequency_hz is not None
+            band = cv.nearest_geq_band(frequency_hz)
+        if not 1 <= band <= len(cv.GEQ_FREQUENCIES):
+            raise AddressError("グラフィック EQ のバンドは 1〜31 です")
+        gain_db = cv.clamp(gain_db, cv.GEQ_MIN_DB, cv.GEQ_MAX_DB)
+        hz = cv.GEQ_FREQUENCIES[band - 1]
+        label = f"{target.label()} GEQ {hz}Hz"
+        check_upper_limit(gain_db, self.s.max_eq_boost_db, confirm, label)
+        paths = [f"{p}{band - 1}" for p in self._geq_prefixes(target, side)]
+        current = cv.value_to_geq_db(self.mixer.get_float(paths[0], 0.5))
+        result: dict[str, Any] = {"target": label, "band": band, "before_db": current, "target_db": gain_db}
+        if gain_db <= current:
+            self.mixer.cancel_ramps_for(paths)
+            for p in paths:
+                self.mixer.setd(p, cv.geq_db_to_value(gain_db))
+            result["mode"] = "即時に変更しました"
+        else:
+            ramp = self.mixer.start_ramp(
+                key=f"geq:{paths[0]}",
+                label=label,
+                paths=paths,
+                start=current,
+                target=gain_db,
+                unit="dB",
+                rate_fn=constant_rate_fn(self.s.raise_rate_db_per_sec),
+                to_value=cv.geq_db_to_value,
+            )
+            result["mode"] = f"ゆっくりブーストしています (約 {ramp.estimated_sec:.0f} 秒)"
+        return result
+
+    def reset_graphic_eq(self, target: Channel, side: str = "both", confirm: bool = False) -> dict[str, Any]:
+        """Flatten the graphic EQ: boosts are cut immediately, cuts are raised slowly."""
+        if not confirm:
+            non_flat = len(self.get_graphic_eq(target)["non_flat"])
+            raise SafetyError(
+                f"{target.label()} のグラフィック EQ には調整済みのバンドが {non_flat} 個あります (会場の音響補正の"
+                "可能性があります)。本当にフラットに戻すなら confirm=true を付けて再実行してください。"
+            )
+        raised, lowered = [], []
+        for prefix in self._geq_prefixes(target, side):
+            for i in range(len(cv.GEQ_FREQUENCIES)):
+                path = f"{prefix}{i}"
+                current = cv.value_to_geq_db(self.mixer.get_float(path, 0.5))
+                if current > 0:
+                    self.mixer.cancel_ramps_for([path])
+                    self.mixer.setd(path, 0.5)
+                    lowered.append(cv.GEQ_FREQUENCIES[i])
+                elif current < 0:
+                    self.mixer.start_ramp(
+                        key=f"geq:{path}",
+                        label=f"{target.label()} GEQ {cv.GEQ_FREQUENCIES[i]}Hz",
+                        paths=[path],
+                        start=current,
+                        target=0.0,
+                        unit="dB",
+                        rate_fn=constant_rate_fn(self.s.raise_rate_db_per_sec),
+                        to_value=cv.geq_db_to_value,
+                    )
+                    raised.append(cv.GEQ_FREQUENCIES[i])
+        return {
+            "target": target.label(),
+            "cut_immediately_hz": sorted(set(lowered)),
+            "raising_slowly_hz": sorted(set(raised)),
+        }
+
+    def set_graphic_eq_bypass(self, target: Channel, bypass: bool) -> dict[str, Any]:
+        if target.is_master:
+            paths = ["m.eq.bypass"]
+        elif target.type == "aux":
+            paths = [f"{cid}.eq.bypass" for cid in master_ids(target, self.mixer.state)]
+        else:
+            raise AddressError("グラフィック EQ があるのは aux と master だけです")
+        for p in paths:
+            self.mixer.setd(p, 1 if bypass else 0)
+        return {"target": target.label(), "graphic_eq_bypass": bypass}
+
     # --- fades ---------------------------------------------------------------
 
     def stop_fades(self) -> dict[str, Any]:

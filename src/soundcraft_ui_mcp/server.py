@@ -23,6 +23,7 @@ Soundcraft Ui シリーズ (Ui12) のデジタルミキサーを操作する MCP
 - 音量を上げる操作 (フェーダー/AUX センドを上げる、ミュート解除、EQ ブースト) はサーバ側で自動的に
   ゆっくりフェードします。ツールは完了を待たずに返るので、進行状況は mixer_status で確認できます。
 - 下げる操作とミュートは即時です。問題が起きたら mute か stop_fades を使ってください。
+- get_graphic_eq / set_graphic_eq_band で AUX・マスターのグラフィック EQ (ハウリング対策など) を扱えます。
 - 安全上限を超える操作は拒否されます。ユーザーが明示的に望んだ場合のみ confirm=true を付けてください。
 """
 
@@ -45,6 +46,9 @@ ConfirmArg = Annotated[bool, Field(description="安全上限を超える操作�
 EqTypeArg = Annotated[Literal["input", "line", "player", "fx", "sub"], Field(description="EQ を持つチャンネル種別")]
 DynTypeArg = Annotated[Literal["input", "line", "player", "fx", "sub", "aux"], Field(description="チャンネル種別")]
 Norm = Annotated[float | None, Field(ge=0, le=1, description="正規化値 0〜1")]
+
+GeqTargetArg = Annotated[Literal["master", "aux"], Field(description="グラフィック EQ の対象")]
+GeqAuxArg = Annotated[int | None, Field(description="target=aux の時の AUX 番号 (1始まり)", ge=1)]
 
 READ = ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=False)
 WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False)
@@ -258,6 +262,54 @@ def build_server(settings: Settings, mixer: MixerClient | None = None) -> MCPSer
     ) -> dict[str, Any]:
         """ハイパスフィルターを設定する (低域カット)。"""
         return await run(lambda: ctl.set_hpf(ctl.channel(channel_type, channel), frequency_hz))
+
+    # --- graphic EQ -----------------------------------------------------------
+
+    @mcp.tool(annotations=READ)
+    async def get_graphic_eq(target: GeqTargetArg, aux: GeqAuxArg = None) -> dict[str, Any]:
+        """AUX (モニター返し) またはマスターの 31 バンドグラフィック EQ (±15 dB) を返す。"""
+        return await run(lambda: ctl.get_graphic_eq(_geq_target(target, aux)))
+
+    @mcp.tool(annotations=WRITE)
+    async def set_graphic_eq_band(
+        target: GeqTargetArg,
+        gain_db: Annotated[float, Field(description="ゲイン -15〜+15 dB", ge=-15, le=15)],
+        aux: GeqAuxArg = None,
+        band: Annotated[int | None, Field(description="バンド番号 1 (20Hz) 〜 31 (20kHz)", ge=1, le=31)] = None,
+        frequency_hz: Annotated[float | None, Field(description="周波数 (最も近いバンドを選ぶ)")] = None,
+        side: Annotated[
+            Literal["both", "left", "right"], Field(description="マスターで L/R がリンクされていない時の対象")
+        ] = "both",
+        confirm: ConfirmArg = False,
+    ) -> dict[str, Any]:
+        """グラフィック EQ の 1 バンドを設定する。ハウリングするモニターの周波数を
+        カットする時などに使う。カットは即時、ブーストはゆっくり行う。"""
+
+        def op() -> dict[str, Any]:
+            return ctl.set_graphic_eq_band(_geq_target(target, aux), gain_db, band, frequency_hz, side, confirm)
+
+        return await run(op)
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=False))
+    async def reset_graphic_eq(
+        target: GeqTargetArg,
+        aux: GeqAuxArg = None,
+        side: Literal["both", "left", "right"] = "both",
+        confirm: Annotated[
+            bool, Field(description="調整済みの EQ (会場の音響補正など) を消すため必須。ユーザーが望んだ時だけ true")
+        ] = False,
+    ) -> dict[str, Any]:
+        """グラフィック EQ をフラットに戻す (confirm=true が必要)。ブーストしていたバンドは即時に戻し、
+        カットしていたバンドはゆっくり戻す。"""
+        return await run(lambda: ctl.reset_graphic_eq(_geq_target(target, aux), side, confirm))
+
+    @mcp.tool(annotations=WRITE)
+    async def set_graphic_eq_bypass(target: GeqTargetArg, bypass: bool, aux: GeqAuxArg = None) -> dict[str, Any]:
+        """グラフィック EQ のバイパス (true でオフ)。"""
+        return await run(lambda: ctl.set_graphic_eq_bypass(_geq_target(target, aux), bypass))
+
+    def _geq_target(target: str, aux: int | None):  # noqa: ANN202
+        return ctl.channel("master") if target == "master" else ctl.channel("aux", aux)
 
     # --- dynamics -----------------------------------------------------------
 

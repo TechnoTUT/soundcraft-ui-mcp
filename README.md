@@ -67,9 +67,11 @@ Measured on a Ui12 with the default settings: -inf to -30 dB takes about 7 s, -i
 | AUX | `get_aux_mix`, `set_aux_send`, `set_aux_send_mute`, `set_aux_send_pan`, `set_aux_send_tap` |
 | EQ | `get_eq`, `set_eq_band`, `set_eq_bypass`, `set_hpf` |
 | Dynamics | `get_dynamics`, `set_compressor`, `set_gate`, `set_dynamics_bypass` |
+| Graphic EQ (AUX / master) | `get_graphic_eq`, `set_graphic_eq_band`, `reset_graphic_eq`, `set_graphic_eq_bypass` |
 
 - Channel numbers start at 1. An operation on a stereo-linked channel also applies to its paired channel.
 - Compressor and gate settings use the mixer's internal values (0 to 1), because the formula for converting them to dB is not published.
+- The graphic EQ has 31 bands from 20 Hz to 20 kHz, ±15 dB. Cuts take effect immediately and boosts fade in slowly. `reset_graphic_eq` requires `confirm=true`, because it would wipe the venue's room tuning.
 
 ## Environment variables
 
@@ -89,6 +91,8 @@ Measured on a Ui12 with the default settings: -inf to -30 dB takes about 7 s, -i
 ## Mock mixer
 
 For development without hardware, `soundcraft-ui-mock` runs a WebSocket server that speaks the mixer protocol. When a client connects, it sends the full state. It applies incoming commands to its state, broadcasts them to the other connected clients, and logs every change.
+
+The state includes the AUX and master graphic EQs (`eq.peak.*`), the master stereo compressor and gate, and the feedback suppression (`afs.*`) keys.
 
 ```bash
 uv run soundcraft-ui-mock                                   # ws://127.0.0.1:8080, synthetic Ui12 state

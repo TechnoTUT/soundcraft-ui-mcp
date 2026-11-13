@@ -124,3 +124,28 @@ def value_to_pan(value: float) -> float:
 def db_repr(db: float) -> float | str:
     """JSON-friendly dB value (-inf becomes the string "-inf")."""
     return "-inf" if db == NEG_INF else db
+
+
+# --- graphic EQ (AUX / master, 31 bands) --------------------------------------
+# From the mixer web app: VtoEQGAIN15(v) = 30*v - 15
+
+GEQ_MIN_DB = -15.0
+GEQ_MAX_DB = 15.0
+GEQ_FREQUENCIES = (
+    20, 25, 31.5, 40, 50, 63, 80, 100, 125, 160, 200, 250, 315, 400, 500, 630,
+    800, 1000, 1250, 1600, 2000, 2500, 3150, 4000, 5000, 6300, 8000, 10000, 12500, 16000, 20000,
+)  # fmt: skip
+
+
+def geq_db_to_value(db: float) -> float:
+    return round(clamp((db - GEQ_MIN_DB) / (GEQ_MAX_DB - GEQ_MIN_DB), 0.0, 1.0), 6)
+
+
+def value_to_geq_db(value: float) -> float:
+    return round(clamp(value, 0.0, 1.0) * 30 - 15, 1) + 0.0
+
+
+def nearest_geq_band(frequency_hz: float) -> int:
+    """1-based index of the graphic EQ band closest to the frequency (log distance)."""
+    f = clamp(frequency_hz, GEQ_FREQUENCIES[0], GEQ_FREQUENCIES[-1])
+    return 1 + min(range(len(GEQ_FREQUENCIES)), key=lambda i: abs(math.log(GEQ_FREQUENCIES[i] / f)))

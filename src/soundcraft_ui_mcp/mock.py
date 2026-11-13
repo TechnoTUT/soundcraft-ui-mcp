@@ -5,7 +5,8 @@ Behaves like the real device closely enough for development without hardware:
 * on connect it sends ``1::`` and then the full state as ``SETD``/``SETS`` lines
   (split into multi-line frames like the real mixer),
 * commands received from a client update the state and are broadcast to every *other* client,
-* ``ALIVE`` keepalives are accepted, and ``2::`` heartbeats are sent periodically.
+* ``ALIVE`` keepalives are accepted, and ``2::`` heartbeats are sent periodically,
+* AUX / master graphic EQs, master stereo dynamics and AFS keys are part of the state.
 
 Usage::
 
@@ -52,6 +53,17 @@ DYN_DEFAULTS = {
     "outgain": 0.3334960938,
     "softknee": 0.0,
     "bypass": 0.0,
+}
+GEQ_BANDS = 31
+MASTER_DYN_DEFAULTS = {
+    "threshold": 0.9375,
+    "ratio": 0.0,
+    "attack": 0.0,
+    "release": 0.2490234375,
+    "hold": 0.158,
+    "gain": 0.75,
+    "outgain": 0.3334960938,
+    "softknee": 0.0,
 }
 GATE_DEFAULTS = {
     "thresh": 0.0,
@@ -120,6 +132,32 @@ def default_state(model: str = "ui12") -> State:
                 st.update({f"{cid}.gate.{p}": v for p, v in GATE_DEFAULTS.items()})
             if code == "i":
                 st.update({f"{cid}.gain": 0.5, f"{cid}.phantom": 0.0})
+            if code == "a":
+                # AUX outputs: 31-band graphic EQ + feedback suppression (AFS)
+                st.update({f"{cid}.eq.peak.{b}": 0.5 for b in range(GEQ_BANDS)})
+                st.update({f"{cid}.eq.bypass": 0.0, f"{cid}.eq.linked": 0.0})
+                st.update(afs_defaults(cid))
+    # master: stereo graphic EQ, stereo compressor, gate and AFS
+    for side in ("l", "r"):
+        st.update({f"m.eq.peak.{side}.{b}": 0.5 for b in range(GEQ_BANDS)})
+        st.update({f"m.dyn.{side}.{p}": v for p, v in MASTER_DYN_DEFAULTS.items()})
+    st.update({"m.eq.bypass": 0.0, "m.eq.linked": 1.0, "m.dyn.bypass": 0.0, "m.dyn.linked": 1.0})
+    st.update({f"m.gate.{p}": v for p, v in GATE_DEFAULTS.items()})
+    st.update({"m.gate.enabled": 0.0, "m.gate.bypass": 1.0})
+    st.update(afs_defaults("m"))
+    return st
+
+
+def afs_defaults(prefix: str) -> State:
+    st: State = {
+        f"{prefix}.afs.enabled": 0.0,
+        f"{prefix}.afs.sensitivity": 0.5,
+        f"{prefix}.afs.numfixed": 6.0,
+        f"{prefix}.afs.numtotal": 12.0,
+        f"{prefix}.afs.logic": 1.0,
+        f"{prefix}.afs.livelift": 0.0,
+    }
+    st.update({f"{prefix}.afs.eq.{i}": "1000.0000000000,116.0000000000,0.0000000000,0" for i in range(12)})
     return st
 
 
