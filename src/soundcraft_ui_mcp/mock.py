@@ -26,6 +26,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import random
 import sys
 import time
 from pathlib import Path
@@ -185,6 +186,20 @@ def default_state(model: str = "ui12") -> State:
     st.update(afs_defaults("m"))
     st["var.rta"] = ""
     st.update({"var.currentShow": "Default", "var.currentSnapshot": "* Init *", "var.currentCue": ""})
+    # media player (USB)
+    st.update(
+        {
+            "var.currentState": PLAYER_STOPPED,
+            "var.currentPlaylist": "",
+            "var.currentTrack": "",
+            "var.currentLength": -1.0,
+            "var.currentTrackPos": 0.0,
+            "var.playBusy": 0.0,
+            "var.shuffle": 0.0,
+            "settings.shuffle": 0.0,
+            "settings.playMode": 0.0,
+        }
+    )
     return st
 
 
@@ -200,6 +215,14 @@ def afs_defaults(prefix: str) -> State:
     st.update({f"{prefix}.afs.eq.{i}": "1000.0000000000,116.0000000000,0.0000000000,0" for i in range(12)})
     return st
 
+
+# demo USB stick contents: playlist -> [(track, length in seconds)]
+DEMO_MEDIA: dict[str, list[tuple[str, float]]] = {
+    "DJ Set": [("01 Warmup.mp3", 262.0), ("02 Peak Time.mp3", 318.0), ("03 Closing.mp3", 287.0)],
+    "BGM": [("Lounge A.mp3", 201.0), ("Lounge B.mp3", 236.0)],
+}
+PLAYER_STOPPED, PLAYER_PLAYING, PLAYER_PAUSED = 0.0, 2.0, 3.0  # soundcraft-ui PlayerState
+PLAYER_TICK_SEC = 0.5
 
 # keys that are not part of a show snapshot / cue
 SNAPSHOT_EXCLUDED_PREFIXES = ("var.", "settings.")
@@ -238,6 +261,8 @@ class MockMixer:
         signal: SignalModel | None = None,
         vu_rate: float = 10.0,
         rta_rate: float = 10.0,
+        media: dict[str, list[tuple[str, float]]] | None = None,
+        player_speed: float = 1.0,
     ) -> None:
         self.state: State = dict(state) if state is not None else default_state()
         self.echo = echo
@@ -247,6 +272,10 @@ class MockMixer:
         self.signal = signal or SignalModel(model=model if model in CAPABILITIES else "ui12")
         self.vu_rate = vu_rate
         self.rta_rate = rta_rate
+        self.media = dict(DEMO_MEDIA if media is None else media)
+        self.player_speed = player_speed
+        self._player_task: asyncio.Task[None] | None = None
+        self._rng = random.Random(7)
         self._last_vu: str | None = None
         self._levels: dict[str, list[dict[str, float]]] | None = None
         self._meter_task: asyncio.Task[None] | None = None
@@ -270,6 +299,19 @@ class MockMixer:
         target = self.state.get("var.rta", "")
         bands = self.signal.spectrum(self.state, self._levels, target if isinstance(target, str) else "")
         return "RTA^" + encode_rta(bands)
+
+    async def start(self) -> None:
+        """Start all background activity (meters and media playback)."""
+        await self.start_meters()
+        if self._player_task is None or self._player_task.done():
+            self._player_task = asyncio.create_task(self._player_loop())
+
+    async def stop(self) -> None:
+        await self.stop_meters()
+        if self._player_task:
+            self._player_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._player_task
 
     async def start_meters(self) -> None:
         if self._meter_task is None or self._meter_task.done():
@@ -333,6 +375,8 @@ class MockMixer:
             self.state[cmd.path] = cmd.value
             log.info("%s = %s", cmd.path, cmd.value)
             await self.broadcast(line, exclude=None if self.echo else sender)
+            if cmd.path == "settings.shuffle":  # the mixer reports the shuffle state as var.shuffle
+                await self.apply({"var.shuffle": cmd.value})
 
     async def broadcast(self, line: str, exclude: ServerConnection | None = None) -> None:
         for client in list(self.clients):
@@ -371,6 +415,96 @@ class MockMixer:
             return
         log.info("command: %s", line)
         await handler(sender, *args)
+
+    # media player
+
+    def _tracks(self, playlist: str) -> list[tuple[str, float]]:
+        return self.media.get(playlist, [])
+
+    def _track_changes(self, playlist: str, index: int) -> State:
+        name, length = self._tracks(playlist)[index]
+        return {
+            "var.currentPlaylist": playlist,
+            "var.currentTrack": name,
+            "var.currentLength": length,
+            "var.currentTrackPos": 0.0,
+        }
+
+    def _current_index(self) -> int:
+        names = [t for t, _ in self._tracks(str(self.state.get("var.currentPlaylist", "")))]
+        track = self.state.get("var.currentTrack", "")
+        return names.index(track) if track in names else -1
+
+    async def _cmd_media_get_plists(self, sender: ServerConnection) -> None:
+        await self.reply(sender, "PLISTS^" + "^".join(self.media))
+
+    async def _cmd_media_get_plist_tracks(self, sender: ServerConnection, playlist: str = "") -> None:
+        if playlist in self.media:
+            await self.reply(sender, f"PLIST_TRACKS^{playlist}^" + "^".join(t for t, _ in self._tracks(playlist)))
+
+    async def _cmd_media_switch_plist(self, sender: ServerConnection, playlist: str = "") -> None:
+        if self._tracks(playlist):
+            await self.apply(self._track_changes(playlist, 0))
+
+    async def _cmd_media_switch_track(self, sender: ServerConnection, playlist: str = "", track: str = "") -> None:
+        names = [t for t, _ in self._tracks(playlist)]
+        if track in names:
+            await self.apply(self._track_changes(playlist, names.index(track)))
+
+    async def _cmd_media_play(self, sender: ServerConnection) -> None:
+        changes: State = {}
+        if self._current_index() < 0:
+            playlist = str(self.state.get("var.currentPlaylist", ""))
+            if not self._tracks(playlist):
+                playlist = next((p for p in self.media if self.media[p]), "")
+            if not playlist:
+                return  # nothing to play (no USB stick / empty)
+            changes.update(self._track_changes(playlist, 0))
+        changes["var.currentState"] = PLAYER_PLAYING
+        await self.apply(changes)
+
+    async def _cmd_media_pause(self, sender: ServerConnection) -> None:
+        if self.state.get("var.currentState") == PLAYER_PLAYING:
+            await self.apply({"var.currentState": PLAYER_PAUSED})
+
+    async def _cmd_media_stop(self, sender: ServerConnection) -> None:
+        await self.apply({"var.currentState": PLAYER_STOPPED, "var.currentTrackPos": 0.0})
+
+    async def _skip(self, step: int) -> None:
+        playlist = str(self.state.get("var.currentPlaylist", ""))
+        tracks = self._tracks(playlist)
+        if not tracks:
+            return
+        if self.state.get("var.shuffle") and step > 0:
+            index = self._rng.randrange(len(tracks))
+        else:
+            index = (max(self._current_index(), 0) + step) % len(tracks)
+        await self.apply(self._track_changes(playlist, index))
+
+    async def _cmd_media_next(self, sender: ServerConnection) -> None:
+        await self._skip(+1)
+
+    async def _cmd_media_prev(self, sender: ServerConnection) -> None:
+        await self._skip(-1)
+
+    async def _player_loop(self) -> None:
+        last = time.monotonic()
+        while True:
+            await asyncio.sleep(PLAYER_TICK_SEC / max(self.player_speed, 1.0))
+            now = time.monotonic()
+            dt, last = (now - last) * self.player_speed, now
+            if self.state.get("var.currentState") != PLAYER_PLAYING:
+                continue
+            length = float(self.state.get("var.currentLength", -1) or -1)
+            if length <= 0:
+                continue
+            pos = float(self.state.get("var.currentTrackPos", 0.0)) + dt / length
+            if pos < 1.0:
+                await self.apply({"var.currentTrackPos": round(pos, 6)})
+            elif self.state.get("settings.playMode", 0):  # auto: continue with the next track
+                await self._skip(+1)
+            else:  # manual: stop at the end of the track
+                await self.apply({"var.currentState": PLAYER_STOPPED, "var.currentTrackPos": 0.0})
 
     # shows / snapshots / cues
 
@@ -440,11 +574,11 @@ def load_state(path: Path) -> State:
 async def serve(host: str, port: int, mock: MockMixer, save_path: Path | None) -> None:
     async with websockets.serve(mock.handler, host, port, ping_interval=None, max_size=None) as server:
         log.info("mock %s mixer listening on ws://%s:%d", mock.state.get("model"), host, port)
-        await mock.start_meters()
+        await mock.start()
         try:
             await server.serve_forever()
         finally:
-            await mock.stop_meters()
+            await mock.stop()
             if save_path:
                 mock.save(save_path)
                 log.info("state saved to %s", save_path)

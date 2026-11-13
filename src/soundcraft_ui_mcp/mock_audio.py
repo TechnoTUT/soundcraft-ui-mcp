@@ -165,6 +165,8 @@ class SignalModel:
                 cid = f"{code}.{k}"
                 ch = Channel(type_, k + 1)  # type: ignore[arg-type]
                 pre = self._source_level((type_, k + 1), t)
+                if type_ == "player" and _f(state, "var.currentState") != 2:
+                    pre = SILENT  # the USB player only produces signal while playing
                 if type_ == "input" and pre != SILENT:
                     # sources are calibrated at the default gain (0.5)
                     pre += hw_gain_db(self.model, _f(state, f"{cid}.gain", 0.5)) - hw_gain_db(self.model, 0.5)
