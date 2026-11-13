@@ -1,12 +1,9 @@
 """Mute groups / MUTE ALL / MUTE FX, following the semantics of the mixer's web app."""
 
-import math
-
 import pytest
+from soundcraft_ui_mock import default_state
 
 from soundcraft_ui_mcp import converters as cv
-from soundcraft_ui_mcp.mock import default_state
-from soundcraft_ui_mcp.mock_audio import SignalModel
 from soundcraft_ui_mcp.paths import Channel, mute_status
 
 from .conftest import wait_ramps
@@ -59,13 +56,3 @@ async def test_mute_clears_forceunmute(ctl, mixer):
 async def test_plain_mute_unchanged_without_groups(ctl, mixer):
     ctl.set_mute(ctl.channel("input", 2), True)
     assert mixer.sent == ["SETD^i.1.mute^1"]
-
-
-def test_mock_signal_respects_group_mute():
-    st = default_state()
-    model = SignalModel.from_profile("demo")
-    assert model.compute(st, 0)["input"][0]["post_fader_db"] > -60
-    st.update({"mgmask": MUTE_ALL})
-    assert model.compute(st, 0)["input"][0]["post_fader_db"] == -math.inf
-    st["i.0.forceunmute"] = 1
-    assert model.compute(st, 0)["input"][0]["post_fader_db"] > -60

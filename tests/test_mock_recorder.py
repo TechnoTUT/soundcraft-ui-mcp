@@ -4,9 +4,9 @@ import asyncio
 
 import pytest
 import websockets
+from soundcraft_ui_mock import MockMixer
 
 from soundcraft_ui_mcp.mixer import MixerClient
-from soundcraft_ui_mcp.mock import MockMixer
 
 
 async def serve(m):

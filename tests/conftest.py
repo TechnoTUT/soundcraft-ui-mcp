@@ -3,11 +3,11 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from soundcraft_ui_mock import default_state
 
 from soundcraft_ui_mcp.config import Settings
 from soundcraft_ui_mcp.controller import MixerController
 from soundcraft_ui_mcp.mixer import MixerClient
-from soundcraft_ui_mcp.mock import default_state
 from soundcraft_ui_mcp.protocol import parse_line
 
 

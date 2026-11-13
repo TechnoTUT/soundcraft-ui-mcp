@@ -8,9 +8,9 @@ import asyncio
 
 import pytest
 import websockets
+from soundcraft_ui_mock import MockMixer, default_state
 
 from soundcraft_ui_mcp.mixer import MixerClient
-from soundcraft_ui_mcp.mock import MockMixer, default_state
 
 # (feature, path, value) - every path must already exist in a Ui12 state
 STATE_WRITES = [

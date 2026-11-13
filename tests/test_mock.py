@@ -4,12 +4,12 @@ import asyncio
 
 import pytest
 import websockets
+from soundcraft_ui_mock import MockMixer
 
 from soundcraft_ui_mcp import converters as cv
 from soundcraft_ui_mcp.config import Settings
 from soundcraft_ui_mcp.controller import MixerController
 from soundcraft_ui_mcp.mixer import MixerClient
-from soundcraft_ui_mcp.mock import MockMixer, default_state, load_state
 
 from .conftest import wait_ramps
 
@@ -27,21 +27,6 @@ async def connect(addr: str) -> MixerClient:
     await c.start()
     assert await c.wait_ready(3)
     return c
-
-
-def test_default_state_shape():
-    st = default_state("ui12")
-    assert st["model"] == "ui12"
-    assert "i.7.mix" in st and "i.8.mix" not in st
-    assert "a.3.mix" in st and "a.4.mix" not in st
-    assert "i.0.aux.3.value" in st and "i.0.eq.b4.gain" in st and "a.0.dyn.outgain" in st
-    assert len(default_state("ui24")) > len(st)
-    # FX settings, input processing extras and channel safes
-    assert [st[f"f.{k}.fxtype"] for k in range(4)] == [0, 1, 2, 3]
-    assert st["f.0.bpm"] == 120 and "f.3.par6" in st
-    assert "i.0.deesser.threshold" in st and "i.0.digitech.amp" in st and st["i.0.hiz"] == 0
-    assert st["l.0.gain"] == 0.4 and st["a.0.safe"] == 0
-    assert st["type"] == "8ch"
 
 
 async def test_client_syncs_full_state(mock):
@@ -90,24 +75,3 @@ async def test_external_change_on_mock_cancels_fade(mock):
     assert c.active_ramps() == []
     assert c.get_float("i.0.mix") == 0.3
     await c.stop()
-
-
-def test_save_and_load(tmp_path):
-    m = MockMixer()
-    m.state["i.0.name"] = "DJ L"
-    f = tmp_path / "state.json"
-    m.save(f)
-    assert load_state(f)["i.0.name"] == "DJ L"
-
-
-def test_state_covers_every_key_of_a_real_ui12():
-    """The synthetic state has every key pattern seen on a real Ui12 (tests/ui12_key_patterns.txt)."""
-    import re
-    from pathlib import Path
-
-    lines = (Path(__file__).parent / "ui12_key_patterns.txt").read_text().splitlines()
-    real = {line for line in lines if line and not line.startswith("#")}
-    mock = {re.sub(r"\.\d+(?=\.|$)", ".N", k) for k in default_state("ui12")}
-    assert sorted(real - mock) == []
-    # keys the mock adds on purpose (written by soundcraft-ui / cue name)
-    assert sorted(mock - real) == ["settings.shuffle", "var.currentCue"]

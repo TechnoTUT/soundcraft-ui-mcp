@@ -4,10 +4,9 @@ import asyncio
 
 import pytest
 import websockets
+from soundcraft_ui_mock import DEMO_MEDIA, MockMixer
 
 from soundcraft_ui_mcp.mixer import MixerClient
-from soundcraft_ui_mcp.mock import DEMO_MEDIA, MockMixer, default_state
-from soundcraft_ui_mcp.mock_audio import SignalModel
 
 PLAYING, PAUSED, STOPPED = 2, 3, 0
 
@@ -82,11 +81,3 @@ async def test_shuffle_is_reported_as_var(mock):
     m, c = mock
     c.setd("settings.shuffle", 1)
     await until(lambda: c.get("var.shuffle") == 1)
-
-
-def test_player_signal_only_while_playing():
-    st = default_state()
-    model = SignalModel.from_profile("demo")
-    assert model.compute(st, 0)["player"][0]["pre_db"] == float("-inf")
-    st["var.currentState"] = PLAYING
-    assert model.compute(st, 0)["player"][0]["pre_db"] > -40
