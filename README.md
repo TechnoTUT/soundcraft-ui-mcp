@@ -70,7 +70,7 @@ Measured on a Ui12 with the default settings: -inf to -30 dB takes about 7 s, -i
 | Graphic EQ (AUX / master) | `get_graphic_eq`, `set_graphic_eq_band`, `reset_graphic_eq`, `set_graphic_eq_bypass` |
 
 - Channel numbers start at 1. An operation on a stereo-linked channel also applies to its paired channel.
-- Compressor and gate settings use the mixer's internal values (0 to 1), because the formula for converting them to dB is not published.
+- Compressor and gate settings are written as the mixer's internal values (0 to 1). `get_dynamics` also returns approximate dB values (`readable`), converted with the formulas from the mixer's web app.
 - The graphic EQ has 31 bands from 20 Hz to 20 kHz, ±15 dB. Cuts take effect immediately and boosts fade in slowly. `reset_graphic_eq` requires `confirm=true`, because it would wipe the venue's room tuning.
 
 ## Environment variables

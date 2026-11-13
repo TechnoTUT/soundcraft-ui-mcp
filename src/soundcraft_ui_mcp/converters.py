@@ -149,3 +149,30 @@ def nearest_geq_band(frequency_hz: float) -> int:
     """1-based index of the graphic EQ band closest to the frequency (log distance)."""
     f = clamp(frequency_hz, GEQ_FREQUENCIES[0], GEQ_FREQUENCIES[-1])
     return 1 + min(range(len(GEQ_FREQUENCIES)), key=lambda i: abs(math.log(GEQ_FREQUENCIES[i] / f)))
+
+
+# --- dynamics (from the mixer web app's value formatters) ---------------------
+
+
+def comp_threshold_db(v: float) -> float:
+    return round(-90 + 96 * v, 1)
+
+
+def comp_ratio(v: float) -> float:
+    return math.inf if v <= 1e-3 else 1 / v
+
+
+def comp_gain_db(v: float) -> float:
+    return 96 * v - 72
+
+
+def comp_outgain_db(v: float) -> float:
+    return round(72 * v - 24, 1)
+
+
+def gate_threshold_db(v: float) -> float:
+    return round(96 * v - 90, 1)
+
+
+def gate_depth_db(v: float) -> float:
+    return round(60 * v - 60, 1)

@@ -180,3 +180,9 @@ async def test_overview(ctl):
     assert ov["input"][0]["name"] == "CH 1"
     assert ov["line"][1]["name"] == "LINE IN R"
     assert ov["master"]["fader_db"] == 0
+
+
+def test_readable_dynamics(ctl):
+    d = ctl.get_dynamics(ctl.channel("input", 1))["readable"]
+    assert d["compressor_outgain_db"] == 0
+    assert d["compressor_gain_db"] == 0

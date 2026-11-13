@@ -10,6 +10,7 @@ Rules
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from . import converters as cv
@@ -506,10 +507,20 @@ class MixerController:
         gate = {p: round(g(f"{ch.id}.gate.{p}"), 4) for p in GATE_PARAMS}
         gate["enabled"] = _bool(self.mixer.get(f"{ch.id}.gate.enabled"))
         gate["bypass"] = _bool(self.mixer.get(f"{ch.id}.gate.bypass"))
+        ratio = cv.comp_ratio(comp["ratio"])
+        readable = {
+            "compressor_threshold_db": cv.comp_threshold_db(comp["threshold"]),
+            "compressor_ratio": "inf" if ratio == math.inf else round(ratio, 2),
+            "compressor_gain_db": round(cv.comp_gain_db(comp["gain"]), 1),
+            "compressor_outgain_db": cv.comp_outgain_db(comp["outgain"]),
+            "gate_threshold_db": cv.gate_threshold_db(gate["thresh"]),
+            "gate_depth_db": cv.gate_depth_db(gate["depth"]),
+        }
         return {
-            "note": "値はミキサー内部の正規化値 (0〜1)。dB への換算式は非公開",
+            "note": "compressor/gate の値はミキサー内部の正規化値 (0〜1)。readable は Web UI の換算式による目安",
             "compressor": comp,
             "gate": gate,
+            "readable": readable,
         }
 
     def set_compressor(self, ch: Channel, params: dict[str, float]) -> dict[str, Any]:
