@@ -198,6 +198,11 @@ def default_state(model: str = "ui12") -> State:
             "var.shuffle": 0.0,
             "settings.shuffle": 0.0,
             "settings.playMode": 0.0,
+            # 2-track USB recorder
+            "var.isRecording": 0.0,
+            "var.recBusy": 0.0,
+            "var.present": 1.0,
+            "var.usbfill": 0.1,
         }
     )
     return st
@@ -223,6 +228,8 @@ DEMO_MEDIA: dict[str, list[tuple[str, float]]] = {
 }
 PLAYER_STOPPED, PLAYER_PLAYING, PLAYER_PAUSED = 0.0, 2.0, 3.0  # soundcraft-ui PlayerState
 PLAYER_TICK_SEC = 0.5
+PLAYER_NO_MEDIA = 1.0  # var.currentState seen on a Ui12 without a USB stick
+RECORDINGS_PLAYLIST = "Recordings"
 
 # keys that are not part of a show snapshot / cue
 SNAPSHOT_EXCLUDED_PREFIXES = ("var.", "settings.")
@@ -263,6 +270,7 @@ class MockMixer:
         rta_rate: float = 10.0,
         media: dict[str, list[tuple[str, float]]] | None = None,
         player_speed: float = 1.0,
+        usb: bool = True,
     ) -> None:
         self.state: State = dict(state) if state is not None else default_state()
         self.echo = echo
@@ -272,7 +280,14 @@ class MockMixer:
         self.signal = signal or SignalModel(model=model if model in CAPABILITIES else "ui12")
         self.vu_rate = vu_rate
         self.rta_rate = rta_rate
-        self.media = dict(DEMO_MEDIA if media is None else media)
+        self.media = dict(DEMO_MEDIA if media is None else media) if usb else {}
+        self.usb = usb
+        self._rec_started: float | None = None
+        self._rec_count = 0
+        if not usb:  # as observed on a Ui12 without a USB stick
+            self.state.update(
+                {"var.currentState": PLAYER_NO_MEDIA, "var.recBusy": 1.0, "var.present": 0.0, "var.usbfill": 0.0}
+            )
         self.player_speed = player_speed
         self._player_task: asyncio.Task[None] | None = None
         self._rng = random.Random(7)
@@ -506,6 +521,22 @@ class MockMixer:
             else:  # manual: stop at the end of the track
                 await self.apply({"var.currentState": PLAYER_STOPPED, "var.currentTrackPos": 0.0})
 
+    # 2-track USB recorder
+
+    async def _cmd_rectoggle(self, sender: ServerConnection) -> None:
+        if not self.usb or self.state.get("var.recBusy"):
+            log.info("RECTOGGLE ignored: no USB stick / recorder busy")
+            return
+        if not self.state.get("var.isRecording"):
+            self._rec_started = time.monotonic()
+            await self.apply({"var.isRecording": 1.0})
+            return
+        length = (time.monotonic() - (self._rec_started or time.monotonic())) * self.player_speed
+        self._rec_count += 1
+        self.media.setdefault(RECORDINGS_PLAYLIST, []).append((f"REC{self._rec_count:04d}.wav", round(length, 1)))
+        fill = min(1.0, float(self.state.get("var.usbfill", 0.0)) + 0.01)
+        await self.apply({"var.isRecording": 0.0, "var.usbfill": fill})
+
     # shows / snapshots / cues
 
     async def _cmd_showlist(self, sender: ServerConnection) -> None:
@@ -610,6 +641,7 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--signal", choices=sorted(PROFILES), default="demo", help="simulated input signals for meters")
     p.add_argument("--vu-rate", type=float, default=10.0, help="VU2 frames per second (0 = off)")
     p.add_argument("--rta-rate", type=float, default=10.0, help="RTA frames per second (0 = off)")
+    p.add_argument("--no-usb", action="store_true", help="behave as if no USB stick is inserted")
     p.add_argument("--log-level", default="INFO")
     d = sub.add_parser("dump", help="snapshot a real mixer's state to JSON (read-only)")
     d.add_argument("--from", dest="source", required=True, help="mixer address, e.g. 192.168.12.22")
@@ -627,7 +659,9 @@ def main(argv: list[str] | None = None) -> None:
     state = load_state(args.state) if args.state else default_state(args.model)
     model = str(state.get("model", args.model))
     signal = SignalModel.from_profile(args.signal, model if model in CAPABILITIES else "ui12")
-    mock = MockMixer(state, echo=args.echo, signal=signal, vu_rate=args.vu_rate, rta_rate=args.rta_rate)
+    mock = MockMixer(
+        state, echo=args.echo, signal=signal, vu_rate=args.vu_rate, rta_rate=args.rta_rate, usb=not args.no_usb
+    )
     with contextlib.suppress(KeyboardInterrupt):
         asyncio.run(serve(args.host, args.port, mock, args.save_on_exit))
 
