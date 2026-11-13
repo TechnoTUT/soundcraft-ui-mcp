@@ -1,0 +1,38 @@
+name: Build and push the container image
+
+# push のたびにビルドし、k8s のクラスタ内のレジストリに push する。
+# TechnoTUT/Infra の k8s で動く self-hosted runner (runner scale set: k8s) で実行する。
+# mock (private submodule) は dev 依存でイメージに入れないので、submodule は取らない。
+on:
+  workflow_dispatch:
+  push:
+
+env:
+  # クラスタ内のレジストリ (HTTP。名前は bind9 にある。クラスタの外からは届かない)
+  REGISTRY: registry.svc.technotut.net
+  IMAGE_NAME: technotut/soundcraft-ui-mcp
+
+jobs:
+  build-and-push-image:
+    runs-on: k8s
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+
+      # runner の dind はクラスタ内のレジストリを insecure-registry として扱うので、ログインは不要。
+      - name: Build and push the image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Containerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
