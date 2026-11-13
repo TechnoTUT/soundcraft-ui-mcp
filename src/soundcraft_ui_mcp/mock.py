@@ -60,6 +60,20 @@ DYN_DEFAULTS = {
     "bypass": 0.0,
 }
 GEQ_BANDS = 31
+# FX processors: Ui default order is reverb, delay, chorus, room (soundcraft-ui FxType 0..3)
+FX_DEFAULT_TYPES = (0.0, 1.0, 2.0, 3.0)
+FX_PARAM_DEFAULTS = {"par1": 0.5, "par2": 0.4, "par3": 0.5, "par4": 1.0, "par5": 0.0, "par6": 0.0}
+DEESSER_DEFAULTS = {"enabled": 0.0, "freq": 0.3617576874, "ratio": 0.4, "threshold": 0.7250676895}
+DIGITECH_DEFAULTS = {
+    "enabled": 0.0,
+    "amp": 0.0,
+    "cab": 0.0,
+    "gain": 0.75,
+    "level": 0.5,
+    "bass": 0.5,
+    "mid": 0.5,
+    "treble": 0.5,
+}
 MASTER_DYN_DEFAULTS = {
     "threshold": 0.9375,
     "ratio": 0.0,
@@ -94,6 +108,9 @@ def default_state(model: str = "ui12") -> State:
         "settings.multiplesolo": 0.0,
         "settings.solotype": 1.0,
         "mgmask": 0.0,
+        "flavour": "1",
+        "schema": "6",
+        "type": f"{caps['input']}ch",
     }
     n_aux = caps["aux"]
     n_fx = caps["fx"]
@@ -139,8 +156,18 @@ def default_state(model: str = "ui12") -> State:
                 st.update({f"{cid}.mgmask": 0.0, f"{cid}.forceunmute": 0.0})
                 st.update({f"{cid}.dyn.{p}": v for p, v in DYN_DEFAULTS.items()})
                 st.update({f"{cid}.gate.{p}": v for p, v in GATE_DEFAULTS.items()})
+            st[f"{cid}.safe"] = 0.0
             if code == "i":
                 st.update({f"{cid}.gain": 0.5, f"{cid}.phantom": 0.0})
+                st.update({f"{cid}.hiz": 0.0, f"{cid}.invert": 0.0, f"{cid}.color": 0.0, f"{cid}.instrument": ""})
+                st.update({f"{cid}.deesser.{p}": v for p, v in DEESSER_DEFAULTS.items()})
+                st.update({f"{cid}.digitech.{p}": v for p, v in DIGITECH_DEFAULTS.items()})
+            if code == "l":
+                st.update({f"{cid}.gain": 0.4, f"{cid}.phantom": 0.0})
+            if code == "f":
+                st[f"{cid}.fxtype"] = FX_DEFAULT_TYPES[k % len(FX_DEFAULT_TYPES)]
+                st[f"{cid}.bpm"] = 120.0
+                st.update({f"{cid}.{p}": v for p, v in FX_PARAM_DEFAULTS.items()})
             if code in "ilps":
                 st[f"{cid}.subgroup"] = -1.0
             if code == "a":

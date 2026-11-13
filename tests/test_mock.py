@@ -36,6 +36,12 @@ def test_default_state_shape():
     assert "a.3.mix" in st and "a.4.mix" not in st
     assert "i.0.aux.3.value" in st and "i.0.eq.b4.gain" in st and "a.0.dyn.outgain" in st
     assert len(default_state("ui24")) > len(st)
+    # FX settings, input processing extras and channel safes
+    assert [st[f"f.{k}.fxtype"] for k in range(4)] == [0, 1, 2, 3]
+    assert st["f.0.bpm"] == 120 and "f.3.par6" in st
+    assert "i.0.deesser.threshold" in st and "i.0.digitech.amp" in st and st["i.0.hiz"] == 0
+    assert st["l.0.gain"] == 0.4 and st["a.0.safe"] == 0
+    assert st["type"] == "8ch"
 
 
 async def test_client_syncs_full_state(mock):
