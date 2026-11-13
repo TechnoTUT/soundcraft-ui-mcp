@@ -3,6 +3,13 @@
 An MCP server that lets MCP clients such as Claude Code and Claude Desktop control a Soundcraft Ui12 digital mixer. It is likely to work with the Ui16 and Ui24R as well, but has only been tested on a Ui12.
 It is built for use during live DJ events, so any operation that raises a level always fades in slowly.
 
+## Motivation
+
+- **Tune the venue by describing it.** Getting a room to sound right usually means someone who knows the mixer has to turn what people say ("the low end is boomy", "vocals get lost") into fader, EQ and dynamics moves. With this server, a person can describe what they hear and the AI adjusts the venue's sound for them.
+- **Close the loop with real-time analysis.** The server reads the mixer's frequency spectrum in real time, so the AI can analyze the sound itself. It can run an analyze → adjust → listen cycle over and over, which makes automatic optimization of the venue's sound possible.
+
+## Protocol
+
 The server talks to the mixer over its WebSocket protocol (`SETD^path^value`). This is a Python reimplementation of the protocol as worked out by [fmalcher/soundcraft-ui](https://github.com/fmalcher/soundcraft-ui).
 
 ## Setup
