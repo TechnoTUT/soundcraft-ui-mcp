@@ -98,3 +98,16 @@ def test_save_and_load(tmp_path):
     f = tmp_path / "state.json"
     m.save(f)
     assert load_state(f)["i.0.name"] == "DJ L"
+
+
+def test_state_covers_every_key_of_a_real_ui12():
+    """The synthetic state has every key pattern seen on a real Ui12 (tests/ui12_key_patterns.txt)."""
+    import re
+    from pathlib import Path
+
+    lines = (Path(__file__).parent / "ui12_key_patterns.txt").read_text().splitlines()
+    real = {line for line in lines if line and not line.startswith("#")}
+    mock = {re.sub(r"\.\d+(?=\.|$)", ".N", k) for k in default_state("ui12")}
+    assert sorted(real - mock) == []
+    # keys the mock adds on purpose (written by soundcraft-ui / cue name)
+    assert sorted(mock - real) == ["settings.shuffle", "var.currentCue"]

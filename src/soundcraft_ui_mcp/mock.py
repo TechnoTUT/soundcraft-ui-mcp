@@ -169,7 +169,7 @@ def default_state(model: str = "ui12") -> State:
                 st[f"{cid}.fxtype"] = FX_DEFAULT_TYPES[k % len(FX_DEFAULT_TYPES)]
                 st[f"{cid}.bpm"] = 120.0
                 st.update({f"{cid}.{p}": v for p, v in FX_PARAM_DEFAULTS.items()})
-            if code in "ilps":
+            if code in "ilpf":
                 st[f"{cid}.subgroup"] = -1.0
             if code == "a":
                 # AUX outputs: 31-band graphic EQ + feedback suppression (AFS)
@@ -185,6 +185,7 @@ def default_state(model: str = "ui12") -> State:
     st.update({"m.gate.enabled": 0.0, "m.gate.bypass": 1.0})
     st.update(afs_defaults("m"))
     st["var.rta"] = ""
+    st.update(_misc_defaults(caps))
     st.update({"var.currentShow": "Default", "var.currentSnapshot": "* Init *", "var.currentCue": ""})
     # media player (USB)
     st.update(
@@ -205,6 +206,93 @@ def default_state(model: str = "ui12") -> State:
             "var.usbfill": 0.1,
         }
     )
+    return st
+
+
+# Remaining keys of a real Ui12 (values as observed; presets empty, no locks).
+SETTINGS_DEFAULTS: State = {
+    "settings.afsonboot": 0.0,
+    "settings.auxmutelink": 0.0,
+    "settings.auxsendpoint": 1.0,
+    "settings.cue": 0.0,
+    "settings.demo": 0.0,
+    "settings.footswitchfunc": 0.0,
+    "settings.hpswap": 0.0,
+    "settings.iosys": 1.0,
+    "settings.maxconn": 48.0,
+    "settings.mtk.format": 0.0,
+    "settings.player.dualmono": 0.0,
+    "settings.recordMode": 2.0,
+    "settings.soloMode": 0.0,
+    "settings.udpcoms": "[]",
+    "settings.underscan": 0.0,
+    "settings.block.pass": "",
+    # access locks; the web app refuses edits in a blocked area
+    **{
+        f"settings.block.{area}": 0.0
+        for area in (
+            "auxlvl",
+            "auxproc",
+            "gsettings",
+            "mixgain",
+            "mixlvl",
+            "mixproc",
+            "mlvl",
+            "mproc",
+            "player",
+            "shows",
+        )
+    },
+}
+VAR_DEFAULTS: State = {
+    "var.afsdata": "",
+    "var.asosec": -1.0,
+    "var.digitech_avoid": 0.0,
+    "var.footswitch": 0.0,
+    "var.fswgpio": 1.0,
+    "var.hpaux": 1.0,
+    "var.lig_bypass": 0.0,
+    "var.mtk.present": 0.0,
+    "var.nophantom": 0.0,
+    "var.pongtime": 0.0,
+    "var.rswgpio": 0.0,
+    "var.sdram": 1.0,
+    "var.spids": 0.0,
+    "var.spiec": 0.0,
+    "var.spien": 1.0,
+    "var.spimb": 0.0,
+    "var.spioa": 0.0,
+    "var.spior": 0.0,
+    "var.testcode": "",
+    "var.unsaved.chsafes": 0.0,
+    "var.unsaved.mutegroups": 0.0,
+}
+
+
+def _misc_defaults(caps: dict[str, int]) -> State:
+    st: State = {"afs.enabled": 1.0, "m.safe": 0.0, **SETTINGS_DEFAULTS, **VAR_DEFAULTS}
+    for type_, code in TYPE_CODES.items():
+        for k in range(caps[type_]):
+            cid = f"{code}.{k}"
+            for section in ("eq", "dyn", "gate"):  # loaded preset
+                st.update({f"{cid}.{section}.prmod": 0.0, f"{cid}.{section}.prname": ""})
+            if code in "ilpfs":
+                st[f"{cid}.eq.easy"] = 0.0
+            if code in "il":
+                st.update({f"{cid}.iosyscmd": "", f"{cid}.iosysname": ""})
+            if code == "i":
+                st[f"{cid}.disablegain"] = 0.0
+            if code == "l":
+                st.update({f"{cid}.instrument": "", f"{cid}.invert": 0.0})
+            if code == "f":
+                st.update({f"{cid}.bypass": 0.0, f"{cid}.prmod": 0.0, f"{cid}.prname": ""})
+                st.update({f"{cid}.smix": 0.7647058824, f"{cid}.span": 0.5})
+            if code == "a":
+                st[f"{cid}.link2master"] = 0.0
+                st.update({f"{cid}.afs.{a}": 0.0 for a in ("clearall", "clearfixed", "clearlive", "cmode", "fmode")})
+    for section in ("eq", "dyn", "gate"):
+        st.update({f"m.{section}.prmod": 0.0, f"m.{section}.prname": ""})
+    st.update({f"m.afs.{a}": 0.0 for a in ("clearall", "clearfixed", "clearlive", "cmode", "fmode")})
     return st
 
 
