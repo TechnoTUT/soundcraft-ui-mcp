@@ -1,0 +1,3 @@
+[submodule "mock"]
+	path = mock
+	url = https://github.com/TechnoTUT/soundcraft-ui-mock.git

@@ -738,6 +738,7 @@ dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "ruff" },
+    { name = "soundcraft-ui-mock" },
 ]
 
 [package.metadata]
@@ -745,6 +746,25 @@ requires-dist = [
     { name = "mcp", specifier = ">=2.3.0" },
     { name = "websockets", specifier = ">=17.4" },
 ]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=9.2.0" },
+    { name = "pytest-asyncio", specifier = ">=1.5.0" },
+    { name = "ruff", specifier = ">=0.17.5" },
+    { name = "soundcraft-ui-mock", editable = "mock" },
+]
+
+[[package]]
+name = "soundcraft-ui-mock"
+version = "0.1.0"
+source = { editable = "mock" }
+dependencies = [
+    { name = "websockets" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "websockets", specifier = ">=17.4" }]
 
 [package.metadata.requires-dev]
 dev = [
