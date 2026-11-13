@@ -12,6 +12,8 @@ class Settings(BaseModel):
     http_host: str = "127.0.0.1"
     http_port: int = 8000
     auth_token: str | None = None
+    # explicitly allow Streamable HTTP without authentication on a non-localhost address
+    http_no_auth: bool = False
 
     # Upper limits; going above requires confirm=true
     max_fader_db: float = Field(0.0, le=10.0)
@@ -37,6 +39,7 @@ class Settings(BaseModel):
             "http_host": "MCP_HTTP_HOST",
             "http_port": "MCP_HTTP_PORT",
             "auth_token": "MCP_AUTH_TOKEN",
+            "http_no_auth": "MCP_HTTP_NO_AUTH",
             "max_fader_db": "MAX_FADER_DB",
             "max_aux_send_db": "MAX_AUX_SEND_DB",
             "max_eq_boost_db": "MAX_EQ_BOOST_DB",

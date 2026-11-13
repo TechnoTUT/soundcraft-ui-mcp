@@ -18,13 +18,41 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     p.add_argument("--mixer-ip", help="mixer IP address (env MIXER_IP)")
     p.add_argument("--host", help="HTTP bind address (env MCP_HTTP_HOST)")
     p.add_argument("--port", type=int, help="HTTP port (env MCP_HTTP_PORT)")
+    p.add_argument(
+        "--no-auth",
+        action="store_true",
+        help="serve HTTP without authentication even on a non-localhost address (env MCP_HTTP_NO_AUTH=1)",
+    )
     p.add_argument("--log-level", default="INFO")
     return p.parse_args(argv)
 
 
+class HttpAuthError(ValueError):
+    pass
+
+
+def check_http_auth(settings: Settings) -> str | None:
+    """Validate the HTTP authentication setup. Returns a warning to log, or raises HttpAuthError."""
+    local = settings.http_host in LOCAL_HOSTS
+    if settings.http_no_auth and settings.auth_token:
+        raise HttpAuthError(
+            "MCP_AUTH_TOKEN と --no-auth (MCP_HTTP_NO_AUTH) が両方指定されています。どちらか一方にしてください"
+        )
+    if settings.auth_token or local:
+        return None
+    if settings.http_no_auth:
+        return (
+            f"認証なしで {settings.http_host}:{settings.http_port} を公開しています。"
+            "同じネットワークの誰でもミキサーを操作できます"
+        )
+    raise HttpAuthError(
+        "localhost 以外で待ち受ける場合は MCP_AUTH_TOKEN を設定するか、"
+        "認証なしで公開することを --no-auth (MCP_HTTP_NO_AUTH=1) で明示してください"
+    )
+
+
 def build_http_app(settings: Settings):  # noqa: ANN201 - Starlette/ASGI app
     from mcp.server.transport_security import TransportSecuritySettings
-    from starlette.responses import JSONResponse
 
     from .server import build_server
 
@@ -35,13 +63,17 @@ def build_http_app(settings: Settings):  # noqa: ANN201 - Starlette/ASGI app
         security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
     app = mcp.streamable_http_app(host=settings.http_host, transport_security=security)
 
-    token = settings.auth_token
+    return with_auth(app, settings.auth_token, health=lambda: {"ok": True, "mixer": mcp.mixer.status})
+
+
+def with_auth(app, token: str | None, health):  # noqa: ANN001, ANN201 - ASGI app
+    """Wrap an ASGI app: ``/healthz`` is always open; with a token, every other request needs it."""
+    from starlette.responses import JSONResponse
 
     async def asgi(scope, receive, send):  # noqa: ANN001, ANN202
         if scope["type"] == "http":
-            path = scope.get("path", "")
-            if path == "/healthz":
-                await JSONResponse({"ok": True, "mixer": mcp.mixer.status})(scope, receive, send)
+            if scope.get("path", "") == "/healthz":
+                await JSONResponse(health())(scope, receive, send)
                 return
             if token:
                 headers = dict(scope.get("headers") or [])
@@ -64,7 +96,12 @@ def main(argv: list[str] | None = None) -> None:
     settings = Settings.from_env()
     overrides = {
         k: v
-        for k, v in {"mixer_ip": args.mixer_ip, "http_host": args.host, "http_port": args.port}.items()
+        for k, v in {
+            "mixer_ip": args.mixer_ip,
+            "http_host": args.host,
+            "http_port": args.port,
+            "http_no_auth": True if args.no_auth else None,
+        }.items()
         if v is not None
     }
     if overrides:
@@ -76,8 +113,12 @@ def main(argv: list[str] | None = None) -> None:
         build_server(settings).run("stdio")
         return
 
-    if settings.http_host not in LOCAL_HOSTS and not settings.auth_token:
-        sys.exit("localhost 以外で待ち受ける場合は MCP_AUTH_TOKEN を設定してください")
+    try:
+        warning = check_http_auth(settings)
+    except HttpAuthError as exc:
+        sys.exit(str(exc))
+    if warning:
+        logging.getLogger("soundcraft_ui_mcp").warning(warning)
 
     import uvicorn
 
