@@ -1,7 +1,12 @@
+import asyncio
 import math
 
 import pytest
+import websockets
 
+from soundcraft_ui_mcp import converters as cv
+from soundcraft_ui_mcp.config import Settings
+from soundcraft_ui_mcp.controller import MixerController
 from soundcraft_ui_mcp.meters import (
     comp_byte,
     comp_reduction_db,
@@ -11,6 +16,9 @@ from soundcraft_ui_mcp.meters import (
     encode_rta,
     encode_vu2,
 )
+from soundcraft_ui_mcp.mixer import MixerClient
+from soundcraft_ui_mcp.mock import MockMixer, default_state
+from soundcraft_ui_mcp.mock_audio import SignalModel
 
 # captured from a silent Ui12 (and identical to vuMsg12_1 in fmalcher/soundcraft-ui)
 UI12_SILENT = (
@@ -64,3 +72,95 @@ def test_byte_helpers():
     assert db_to_vu_byte(0) == 240
     assert db_to_vu_byte(-math.inf) == 0
     assert decode_rta(encode_rta([-80, -40, 0])) == [-80, pytest.approx(-40, abs=0.4), pytest.approx(0, abs=0.4)]
+
+
+# --- signal model ------------------------------------------------------------
+
+
+def frame(state, model=None):
+    model = model or SignalModel.from_profile("demo")
+    model.sources[("input", 1)].kind = "tone"
+    return model.compute(state, 0.0)
+
+
+def test_signal_follows_fader_and_mute():
+    st = default_state()
+    base = frame(st)["input"][0]
+    assert base["post_fader_db"] == pytest.approx(base["post_db"] - 10, abs=0.2)  # default fader -10 dB
+    st["i.0.mix"] = cv.db_to_fader(-20)
+    assert frame(st)["input"][0]["post_fader_db"] == pytest.approx(base["post_db"] - 20, abs=0.2)
+    st["i.0.mute"] = 1
+    assert frame(st)["input"][0]["post_fader_db"] == -math.inf
+
+
+def test_signal_gain_and_comp():
+    st = default_state()
+    st["i.0.gain"] = 0.6  # +6.3 dB
+    hot = frame(st)["input"][0]
+    assert hot["pre_db"] == pytest.approx(-14 + 6.3, abs=0.2)
+    st["i.0.dyn.threshold"] = (-30 + 90) / 96  # -30 dB threshold
+    st["i.0.dyn.ratio"] = 0.25  # 4:1
+    comp = frame(st)["input"][0]
+    assert comp["comp_reduction_db"] > 10
+    assert comp["post_db"] < hot["post_db"] - 10
+
+
+def test_signal_aux_send_and_master():
+    st = default_state()
+    assert frame(st)["aux"][0]["post_db"] == -math.inf
+    st["i.0.aux.0.value"] = cv.db_to_fader(0)
+    aux = frame(st)["aux"][0]
+    assert aux["post_db"] > -30
+    st["a.0.eq.peak.17"] = cv.geq_db_to_value(-15)
+    assert frame(st)["aux"][0]["post_db"] < aux["post_db"]
+    st["m.mix"] = 0.0
+    master = frame(st)["master"]
+    assert master[0]["post_fader_db"] == -math.inf and master[0]["post_db"] > -40
+
+
+# --- mock + client -------------------------------------------------------------
+
+
+@pytest.fixture
+async def running_mock():
+    m = MockMixer(signal=SignalModel.from_profile("demo"), vu_rate=50, rta_rate=50)
+    async with websockets.serve(m.handler, "127.0.0.1", 0) as srv:
+        await m.start_meters()
+        yield m, f"127.0.0.1:{srv.sockets[0].getsockname()[1]}"
+        await m.stop_meters()
+
+
+async def test_client_receives_meters_and_rta(running_mock):
+    m, addr = running_mock
+    c = MixerClient(addr)
+    await c.start()
+    assert await c.wait_ready(3)
+    await asyncio.sleep(0.3)
+    assert c.vu is not None and c.rta is not None and len(c.rta) == 120
+    ctl = MixerController(c, Settings())
+    meters = ctl.get_meters()
+    assert meters["available"] and meters["input"][0]["name"] == "CH 1"
+    assert meters["input"][0]["pre_db"] > -30
+    assert meters["input"][4]["pre_db"] == -80  # no source on input 5
+    spectrum = ctl.get_spectrum()
+    assert spectrum["available"] and len(spectrum["bands"]) == 31
+    # muting input 1 shows up in the meters
+    ctl.set_mute(ctl.channel("input", 1), True)
+    await asyncio.sleep(0.3)
+    assert ctl.get_meters()["input"][0]["post_fader_db"] == -80
+    await c.stop()
+
+
+async def test_silent_profile_sends_vu_only_on_change(running_mock):
+    m = MockMixer(signal=SignalModel.from_profile("silent"), vu_rate=50, rta_rate=0)
+    sent: list[str] = []
+
+    async def fake_broadcast(line, exclude=None):
+        sent.append(line)
+
+    m.broadcast = fake_broadcast  # type: ignore[method-assign]
+    m.clients.add(object())  # type: ignore[arg-type]
+    await m.start_meters()
+    await asyncio.sleep(0.2)
+    await m.stop_meters()
+    assert len([s for s in sent if s.startswith("VU2^")]) == 1

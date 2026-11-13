@@ -6,6 +6,8 @@ Behaves like the real device closely enough for development without hardware:
   (split into multi-line frames like the real mixer),
 * commands received from a client update the state and are broadcast to every *other* client,
 * ``ALIVE`` keepalives are accepted, and ``2::`` heartbeats are sent periodically,
+* ``VU2`` meter frames and ``RTA`` spectrum frames are generated from a small signal model
+  (``--signal demo|silent``) that reacts to gain, EQ, gate, compressor, faders, mutes and sends,
 * AUX / master graphic EQs, master stereo dynamics and AFS keys are part of the state.
 
 Usage::
@@ -25,12 +27,15 @@ import contextlib
 import json
 import logging
 import sys
+import time
 from pathlib import Path
 
 import websockets
 from websockets.asyncio.server import ServerConnection
 
 from .converters import db_to_fader
+from .meters import encode_rta, encode_vu2
+from .mock_audio import PROFILES, SignalModel
 from .paths import CAPABILITIES, TYPE_CODES
 from .protocol import build_setd, build_sets, frame, parse_line, split_frame
 
@@ -132,6 +137,8 @@ def default_state(model: str = "ui12") -> State:
                 st.update({f"{cid}.gate.{p}": v for p, v in GATE_DEFAULTS.items()})
             if code == "i":
                 st.update({f"{cid}.gain": 0.5, f"{cid}.phantom": 0.0})
+            if code in "ilps":
+                st[f"{cid}.subgroup"] = -1.0
             if code == "a":
                 # AUX outputs: 31-band graphic EQ + feedback suppression (AFS)
                 st.update({f"{cid}.eq.peak.{b}": 0.5 for b in range(GEQ_BANDS)})
@@ -145,6 +152,7 @@ def default_state(model: str = "ui12") -> State:
     st.update({f"m.gate.{p}": v for p, v in GATE_DEFAULTS.items()})
     st.update({"m.gate.enabled": 0.0, "m.gate.bypass": 1.0})
     st.update(afs_defaults("m"))
+    st["var.rta"] = ""
     return st
 
 
@@ -168,11 +176,68 @@ def state_lines(state: State) -> list[str]:
 
 
 class MockMixer:
-    def __init__(self, state: State | None = None, *, echo: bool = False) -> None:
+    def __init__(
+        self,
+        state: State | None = None,
+        *,
+        echo: bool = False,
+        signal: SignalModel | None = None,
+        vu_rate: float = 10.0,
+        rta_rate: float = 10.0,
+    ) -> None:
         self.state: State = dict(state) if state is not None else default_state()
         self.echo = echo
         self.clients: set[ServerConnection] = set()
         self.received: list[str] = []
+        model = str(self.state.get("model", "ui12"))
+        self.signal = signal or SignalModel(model=model if model in CAPABILITIES else "ui12")
+        self.vu_rate = vu_rate
+        self.rta_rate = rta_rate
+        self._last_vu: str | None = None
+        self._levels: dict[str, list[dict[str, float]]] | None = None
+        self._meter_task: asyncio.Task[None] | None = None
+        self._t0 = time.monotonic()
+
+    # --- meters ---------------------------------------------------------------
+
+    def vu_line(self) -> str:
+        """Compute the current meter frame and return it as a ``VU2^`` line."""
+        self._levels = self.signal.compute(self.state, time.monotonic() - self._t0)
+        return "VU2^" + encode_vu2(self._levels)
+
+    def rta_line(self) -> str:
+        if self._levels is None:
+            self.vu_line()
+        assert self._levels is not None
+        target = self.state.get("var.rta", "")
+        bands = self.signal.spectrum(self.state, self._levels, target if isinstance(target, str) else "")
+        return "RTA^" + encode_rta(bands)
+
+    async def start_meters(self) -> None:
+        if self._meter_task is None or self._meter_task.done():
+            self._meter_task = asyncio.create_task(self._meter_loop())
+
+    async def stop_meters(self) -> None:
+        if self._meter_task:
+            self._meter_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._meter_task
+
+    async def _meter_loop(self) -> None:
+        tick = 1 / max(self.vu_rate, self.rta_rate, 0.1)
+        next_vu = next_rta = 0.0
+        while True:
+            now = time.monotonic()
+            if self.clients and self.vu_rate > 0 and now >= next_vu:
+                next_vu = now + 1 / self.vu_rate
+                line = self.vu_line()
+                if line != self._last_vu:  # like the real mixer: only when the meters change
+                    self._last_vu = line
+                    await self.broadcast(line)
+            if self.clients and self.rta_rate > 0 and now >= next_rta:
+                next_rta = now + 1 / self.rta_rate
+                await self.broadcast(self.rta_line())
+            await asyncio.sleep(tick)
 
     async def handler(self, ws: ServerConnection) -> None:
         self.clients.add(ws)
@@ -183,6 +248,7 @@ class MockMixer:
             lines = state_lines(self.state)
             for i in range(0, len(lines), FRAME_LINES):
                 await ws.send(frame("\n".join(lines[i : i + FRAME_LINES])))
+            await ws.send(frame(self.vu_line()))
             async for raw in ws:
                 if isinstance(raw, str):
                     await self._handle(ws, raw)
@@ -233,9 +299,11 @@ def load_state(path: Path) -> State:
 async def serve(host: str, port: int, mock: MockMixer, save_path: Path | None) -> None:
     async with websockets.serve(mock.handler, host, port, ping_interval=None, max_size=None) as server:
         log.info("mock %s mixer listening on ws://%s:%d", mock.state.get("model"), host, port)
+        await mock.start_meters()
         try:
             await server.serve_forever()
         finally:
+            await mock.stop_meters()
             if save_path:
                 mock.save(save_path)
                 log.info("state saved to %s", save_path)
@@ -264,6 +332,9 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--model", choices=sorted(CAPABILITIES), default="ui12")
     p.add_argument("--save-on-exit", type=Path, help="write the final state to this JSON file")
     p.add_argument("--echo", action="store_true", help="also echo commands back to the sender")
+    p.add_argument("--signal", choices=sorted(PROFILES), default="demo", help="simulated input signals for meters")
+    p.add_argument("--vu-rate", type=float, default=10.0, help="VU2 frames per second (0 = off)")
+    p.add_argument("--rta-rate", type=float, default=10.0, help="RTA frames per second (0 = off)")
     p.add_argument("--log-level", default="INFO")
     d = sub.add_parser("dump", help="snapshot a real mixer's state to JSON (read-only)")
     d.add_argument("--from", dest="source", required=True, help="mixer address, e.g. 192.168.12.22")
@@ -279,7 +350,9 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     state = load_state(args.state) if args.state else default_state(args.model)
-    mock = MockMixer(state, echo=args.echo)
+    model = str(state.get("model", args.model))
+    signal = SignalModel.from_profile(args.signal, model if model in CAPABILITIES else "ui12")
+    mock = MockMixer(state, echo=args.echo, signal=signal, vu_rate=args.vu_rate, rta_rate=args.rta_rate)
     with contextlib.suppress(KeyboardInterrupt):
         asyncio.run(serve(args.host, args.port, mock, args.save_on_exit))
 
