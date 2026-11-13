@@ -11,6 +11,7 @@ Rules
 from __future__ import annotations
 
 import math
+import time
 from typing import Any
 
 from . import converters as cv
@@ -573,6 +574,60 @@ class MixerController:
         for cid in master_ids(ch, self.mixer.state):
             self.mixer.setd(f"{cid}.{key}.bypass", 1 if bypass else 0)
         return {"target": ch.label(), "section": section, "bypass": bypass}
+
+    # --- meters ---------------------------------------------------------------
+
+    def get_meters(self) -> dict[str, Any]:
+        """Latest VU meter frame, labelled with channel names (dB, -80 = silence)."""
+        vu = self.mixer.vu
+        if vu is None or self.mixer.vu_at is None:
+            return {
+                "available": False,
+                "note": "まだメーター情報を受信していません (実機は無音時、メーターが変化した時だけ送信します)",
+            }
+        age = time.monotonic() - self.mixer.vu_at
+        st = self.mixer.state
+        out: dict[str, Any] = {
+            "available": True,
+            "age_sec": round(age, 1),
+            "note": "dB はメーター上の値 (-80 = 無音, 0 = フルスケール)。age_sec が大きい場合は"
+            "メーターが変化していない (無音など) 可能性があります",
+        }
+        if len(vu.master) >= 2:
+            out["master"] = {
+                "l_db": vu.master[0]["post_fader_db"],
+                "r_db": vu.master[1]["post_fader_db"],
+                "pre_fader_l_db": vu.master[0]["post_db"],
+                "pre_fader_r_db": vu.master[1]["post_db"],
+            }
+        caps = capabilities(self.model)
+        for type_ in ("input", "line", "player", "fx", "sub", "aux"):
+            entries = []
+            for i, m in enumerate(getattr(vu, type_)[: caps[type_]]):
+                ch = Channel(type_, i + 1)  # type: ignore[arg-type]
+                entries.append({"number": i + 1, "name": channel_name(ch, st), **m})
+            out[type_] = entries
+        return out
+
+    def get_spectrum(self) -> dict[str, Any]:
+        rta = self.mixer.rta
+        if rta is None or self.mixer.rta_at is None:
+            return {"available": False}
+        from .meters import rta_frequencies
+
+        target = self.mixer.get("var.rta", "")
+        # condense the 120 analyser bands into the 31 graphic-EQ bands for readability
+        freqs = rta_frequencies(len(rta))
+        bands = []
+        for f0 in cv.GEQ_FREQUENCIES:
+            near = [lv for f, lv in zip(freqs, rta, strict=True) if abs(math.log2(f / f0)) <= 1 / 6]
+            bands.append({"hz": f0, "db": max(near) if near else None})
+        return {
+            "available": True,
+            "source": target or "master",
+            "age_sec": round(time.monotonic() - self.mixer.rta_at, 1),
+            "bands": bands,
+        }
 
     # --- graphic EQ (AUX / master) ---------------------------------------------
 

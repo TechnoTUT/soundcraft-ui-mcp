@@ -23,7 +23,8 @@ Soundcraft Ui シリーズ (Ui12) のデジタルミキサーを操作する MCP
 - 音量を上げる操作 (フェーダー/AUX センドを上げる、ミュート解除、EQ ブースト) はサーバ側で自動的に
   ゆっくりフェードします。ツールは完了を待たずに返るので、進行状況は mixer_status で確認できます。
 - 下げる操作とミュートは即時です。問題が起きたら mute か stop_fades を使ってください。
-- get_graphic_eq / set_graphic_eq_band で AUX・マスターのグラフィック EQ (ハウリング対策など) を扱えます。
+- get_meters で信号の有無やレベル、get_graphic_eq / set_graphic_eq_band で AUX・マスターの
+  グラフィック EQ (ハウリング対策など) を扱えます。
 - 安全上限を超える操作は拒否されます。ユーザーが明示的に望んだ場合のみ confirm=true を付けてください。
 """
 
@@ -262,6 +263,22 @@ def build_server(settings: Settings, mixer: MixerClient | None = None) -> MCPSer
     ) -> dict[str, Any]:
         """ハイパスフィルターを設定する (低域カット)。"""
         return await run(lambda: ctl.set_hpf(ctl.channel(channel_type, channel), frequency_hz))
+
+    # --- meters -------------------------------------------------------------
+
+    @mcp.tool(annotations=READ)
+    async def get_meters() -> dict[str, Any]:
+        """全チャンネルとマスターの現在のメーター値 (dB, -80=無音) を返す。
+        入力に信号が来ているか、クリップしていないか、コンプがどれだけ効いているかの確認に使う。
+        input/line/player: pre_db (ゲイン後), post_db (EQ/ダイナミクス後), post_fader_db (出力),
+        comp_reduction_db (コンプのゲインリダクション)。"""
+        return await run(ctl.get_meters)
+
+    @mcp.tool(annotations=READ)
+    async def get_spectrum() -> dict[str, Any]:
+        """RTA (スペクトラムアナライザ) の最新値を 31 バンドにまとめて返す。対象はミキサー側で
+        RTA に選択されているチャンネル (未選択ならマスター)。"""
+        return await run(ctl.get_spectrum)
 
     # --- graphic EQ -----------------------------------------------------------
 

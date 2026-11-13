@@ -13,6 +13,7 @@ from typing import Any
 
 import websockets
 
+from .meters import VuFrame, decode_rta, decode_vu2
 from .protocol import build_setd, build_sets, frame, parse_line, split_frame
 
 log = logging.getLogger(__name__)
@@ -87,6 +88,10 @@ class MixerClient:
         self._ramps: dict[str, Ramp] = {}
         self._finished: deque[dict[str, Any]] = deque(maxlen=10)
         self._last_message_at = 0.0
+        self.vu: VuFrame | None = None
+        self.vu_at: float | None = None
+        self.rta: list[float] | None = None
+        self.rta_at: float | None = None
 
     # --- lifecycle -----------------------------------------------------------
 
@@ -192,6 +197,12 @@ class MixerClient:
         if not lines:
             return
         for line in lines:
+            if line.startswith("VU2^"):
+                self._handle_meter(line)
+                continue
+            if line.startswith("RTA^"):
+                self._handle_rta(line)
+                continue
             cmd = parse_line(line)
             if cmd is None:
                 continue
@@ -199,6 +210,20 @@ class MixerClient:
             self.state[cmd.path] = cmd.value
             if isinstance(cmd.value, float):
                 self._check_external_change(cmd.path, cmd.value)
+
+    def _handle_meter(self, line: str) -> None:
+        try:
+            self.vu = decode_vu2(line[4:])
+            self.vu_at = time.monotonic()
+        except (ValueError, IndexError) as exc:
+            log.debug("bad VU2 frame: %s", exc)
+
+    def _handle_rta(self, line: str) -> None:
+        try:
+            self.rta = decode_rta(line[4:])
+            self.rta_at = time.monotonic()
+        except ValueError as exc:
+            log.debug("bad RTA frame: %s", exc)
 
     def _check_external_change(self, path: str, value: float) -> None:
         for ramp in list(self._ramps.values()):
