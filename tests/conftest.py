@@ -6,42 +6,13 @@ import pytest
 
 from soundcraft_ui_mcp.config import Settings
 from soundcraft_ui_mcp.controller import MixerController
-from soundcraft_ui_mcp.converters import db_to_fader
 from soundcraft_ui_mcp.mixer import MixerClient
+from soundcraft_ui_mcp.mock import default_state
 from soundcraft_ui_mcp.protocol import parse_line
 
 
 def base_state() -> dict[str, float | str]:
-    st: dict[str, float | str] = {
-        "model": "ui12",
-        "firmware": "1.0.0-ui12",
-        "m.mix": db_to_fader(0),
-        "m.pan": 0.5,
-    }
-    for code, n in (("i", 8), ("l", 2), ("p", 2), ("f", 4), ("s", 4), ("a", 4)):
-        for k in range(n):
-            cid = f"{code}.{k}"
-            st.update({f"{cid}.mix": db_to_fader(-10), f"{cid}.mute": 0, f"{cid}.solo": 0, f"{cid}.pan": 0.5})
-            st[f"{cid}.name"] = ""
-            if code in "ilpa":
-                st[f"{cid}.stereoIndex"] = -1
-            if code in "ilpf":
-                for b in range(4):
-                    st.update({f"{cid}.aux.{b}.value": 0.0, f"{cid}.aux.{b}.mute": 0, f"{cid}.aux.{b}.post": 0})
-            if code in "ilpfs":
-                for b in range(1, 5):
-                    st.update(
-                        {
-                            f"{cid}.eq.b{b}.freq": 0.5,
-                            f"{cid}.eq.b{b}.q": 0.5252185347,
-                            f"{cid}.eq.b{b}.gain": 0.5,
-                        }
-                    )
-                st[f"{cid}.eq.hpf.freq"] = 0.0
-                st[f"{cid}.eq.bypass"] = 0
-            for p in ("threshold", "ratio", "attack", "release", "gain", "outgain", "softknee", "bypass"):
-                st[f"{cid}.dyn.{p}"] = 0.3
-    return st
+    return default_state("ui12")
 
 
 class FakeMixer(MixerClient):

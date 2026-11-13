@@ -86,6 +86,32 @@ Measured on a Ui12 with the default settings: -inf to -30 dB takes about 7 s, -i
 | `QUIET_ZONE_DB` / `QUIET_ZONE_MULTIPLIER` | `-30` / `3` | Below this level, fade up faster by this factor |
 | `DYN_RAISE_RATE_PER_SEC` | `0.01` | Fade-up speed for compressor gain and outgain (internal units per second) |
 
+## Mock mixer
+
+For development without hardware, `soundcraft-ui-mock` runs a WebSocket server that speaks the mixer protocol. When a client connects, it sends the full state. It applies incoming commands to its state, broadcasts them to the other connected clients, and logs every change.
+
+```bash
+uv run soundcraft-ui-mock                                   # ws://127.0.0.1:8080, synthetic Ui12 state
+MIXER_IP=127.0.0.1:8080 uv run soundcraft-ui-mcp            # point the MCP server at the mock
+```
+
+| Option | Description |
+|---|---|
+| `--port` / `--host` | Listen address (default `127.0.0.1:8080`) |
+| `--model ui12\|ui16\|ui24` | Channel layout of the synthetic state |
+| `--state FILE` | Start from a saved JSON state |
+| `--save-on-exit FILE` | Write the final state to JSON on exit |
+| `--echo` | Also echo commands back to the client that sent them |
+
+To snapshot a real mixer's state (read-only) and replay it in the mock:
+
+```bash
+uv run soundcraft-ui-mock dump --from 192.168.12.22 -o state.json
+uv run soundcraft-ui-mock --state state.json
+```
+
+In tests, `MockMixer.set_external(path, value)` simulates someone changing a value on the mixer's own web UI.
+
 ## Development
 
 ```bash
