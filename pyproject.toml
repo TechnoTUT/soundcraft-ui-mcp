@@ -1,0 +1,39 @@
+[project]
+name = "soundcraft-ui-mcp"
+version = "0.1.0"
+description = "MCP server to control Soundcraft Ui12/16/24R digital mixers"
+readme = "README.md"
+authors = [
+    { name = "DDlia", email = "gh@ddlia.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "mcp>=2.3.0",
+    "websockets>=17.4",
+]
+
+[project.scripts]
+soundcraft-ui-mcp = "soundcraft_ui_mcp.__main__:main"
+
+[build-system]
+requires = ["uv_build>=0.13.1,<0.14.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+    "pytest-asyncio>=1.5.0",
+    "ruff>=0.17.5",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
