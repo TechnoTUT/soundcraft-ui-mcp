@@ -1,25 +1,37 @@
 name: Build and push the container image
 
-# push のたびにビルドし、k8s のクラスタ内のレジストリに push する。
-# TechnoTUT/Infra の k8s で動く self-hosted runner (runner scale set: k8s) で実行する。
+# GitHub-hosted runner でビルドし、ghcr.io/technotut/soundcraft-ui-mcp に push する。
+# public リポジトリなので、TechnoTUT/Infra の self-hosted runner (k8s) は使わない。
+# PR ではビルドだけ行い、push しない。
 # mock (private submodule) は dev 依存でイメージに入れないので、submodule は取らない。
 on:
   workflow_dispatch:
   push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
 
 env:
-  # クラスタ内のレジストリ (HTTP。名前は bind9 にある。クラスタの外からは届かない)
-  REGISTRY: registry.svc.technotut.net
+  REGISTRY: ghcr.io
   IMAGE_NAME: technotut/soundcraft-ui-mcp
 
 jobs:
   build-and-push-image:
-    runs-on: k8s
+    runs-on: ubuntu-latest
     permissions:
       contents: read
+      packages: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Log in to the Container registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract metadata (tags, labels) for Docker
         id: meta
@@ -27,12 +39,11 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
 
-      # runner の dind はクラスタ内のレジストリを insecure-registry として扱うので、ログインは不要。
       - name: Build and push the image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Containerfile
-          push: true
+          push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
