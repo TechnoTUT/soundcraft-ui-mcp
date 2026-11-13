@@ -95,9 +95,9 @@ def test_signal_follows_fader_and_mute():
 
 def test_signal_gain_and_comp():
     st = default_state()
-    st["i.0.gain"] = 0.6  # +6.3 dB
+    st["i.0.gain"] = 0.6  # Ui12: -40..+50 dB, so +9 dB
     hot = frame(st)["input"][0]
-    assert hot["pre_db"] == pytest.approx(-14 + 6.3, abs=0.2)
+    assert hot["pre_db"] == pytest.approx(-14 + 9, abs=0.2)
     st["i.0.dyn.threshold"] = (-30 + 90) / 96  # -30 dB threshold
     st["i.0.dyn.ratio"] = 0.25  # 4:1
     comp = frame(st)["input"][0]

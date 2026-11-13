@@ -18,7 +18,13 @@ from .meters import RTA_BANDS, rta_frequencies
 from .paths import CAPABILITIES, Channel, mute_status
 
 SILENT = -math.inf
-HW_GAIN_DEFAULT_DB = 25.5  # -6 + 63 * 0.5
+# Input gain range in dB per model (soundcraft-ui HwChannel): Ui12/Ui16 -40..+50, Ui24R -6..+57
+HW_GAIN_RANGE_DB = {"ui12": (-40.0, 50.0), "ui16": (-40.0, 50.0), "ui24": (-6.0, 57.0)}
+
+
+def hw_gain_db(model: str, value: float) -> float:
+    lo, hi = HW_GAIN_RANGE_DB.get(model, HW_GAIN_RANGE_DB["ui12"])
+    return lo + (hi - lo) * value
 
 
 def db_sum(levels: list[float]) -> float:
@@ -160,7 +166,8 @@ class SignalModel:
                 ch = Channel(type_, k + 1)  # type: ignore[arg-type]
                 pre = self._source_level((type_, k + 1), t)
                 if type_ == "input" and pre != SILENT:
-                    pre += -6 + 63 * _f(state, f"{cid}.gain", 0.5) - HW_GAIN_DEFAULT_DB
+                    # sources are calibrated at the default gain (0.5)
+                    pre += hw_gain_db(self.model, _f(state, f"{cid}.gain", 0.5)) - hw_gain_db(self.model, 0.5)
                 processed = pre + self._eq_effect(state, cid) if pre != SILENT else SILENT
                 dyn_in, post, reduction = self._dynamics(state, cid, processed)
                 muted = mute_status(ch, state)[0]
