@@ -88,6 +88,30 @@ async def test_external_change_cancels_ramp(ctl, mixer, settings):
     assert len(mixer.sent) == n
 
 
+async def test_external_change_is_reasserted_after_crossing_write(ctl, mixer, settings):
+    """A ramp write in flight can land after a person's change; their value must win in the end."""
+    slow = MixerController(mixer, settings.model_copy(update={"raise_rate_db_per_sec": 1.0}))
+    slow.set_fader(slow.channel("input", 1), db=0)
+    await asyncio.sleep(0.05)
+    mixer.inject("SETD^i.0.mix^0.2")  # person pulls the fader down while our write is in flight
+    await asyncio.sleep(0.3)
+    assert mixer.sent[-1] == "SETD^i.0.mix^0.2"  # their value re-sent, so the mixer ends on it
+    assert mixer.get_float("i.0.mix") == 0.2
+
+
+async def test_no_reassert_when_no_recent_write(ctl, mixer, settings, monkeypatch):
+    from soundcraft_ui_mcp import mixer as mixer_mod
+
+    monkeypatch.setattr(mixer_mod, "CROSSING_WINDOW_SEC", 0.0)
+    slow = MixerController(mixer, settings.model_copy(update={"raise_rate_db_per_sec": 1.0}))
+    slow.set_fader(slow.channel("input", 1), db=0)
+    await asyncio.sleep(0.05)
+    mixer.inject("SETD^i.0.mix^0.2")
+    n = len(mixer.sent)
+    await asyncio.sleep(0.3)
+    assert len(mixer.sent) == n
+
+
 async def test_own_echo_does_not_cancel(ctl, mixer, settings):
     slow = MixerController(mixer, settings.model_copy(update={"raise_rate_db_per_sec": 1.0}))
     slow.set_fader(slow.channel("input", 1), db=0)

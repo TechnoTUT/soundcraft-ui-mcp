@@ -23,6 +23,10 @@ RECONNECT_SEC = 2.0
 SYNC_QUIET_SEC = 0.3
 ECHO_TOLERANCE = 2e-3
 LIST_TIMEOUT_SEC = 1.5
+# A ramp write may still be in flight when someone moves the control on the mixer and land after
+# their change. If we wrote within this window, the person's value is re-sent after a short delay.
+CROSSING_WINDOW_SEC = 0.5
+REASSERT_DELAY_SEC = 0.15
 
 # Resource lists the mixer sends on request (from soundcraft-ui). "keyed" lists carry the
 # owner name as 2nd field, e.g. "SNAPSHOTLIST^<show>^snap1^snap2".
@@ -48,6 +52,7 @@ class Ramp:
     task: asyncio.Task[None] | None = None
     sent: dict[str, deque[float]] = field(default_factory=dict)
     end_reason: str | None = None
+    last_sent_at: float = 0.0
 
     def info(self) -> dict[str, Any]:
         elapsed = time.monotonic() - self.started_at
@@ -252,6 +257,19 @@ class MixerClient:
                 if sent and not any(abs(value - v) <= ECHO_TOLERANCE for v in sent):
                     log.info("external change on %s; cancelling ramp %s", path, ramp.key)
                     self._end_ramp(ramp, "外部 (Web UI / 実機) で操作されたため中止")
+                    if time.monotonic() - ramp.last_sent_at < CROSSING_WINDOW_SEC:
+                        asyncio.get_running_loop().create_task(self._reassert_external(ramp))
+
+    async def _reassert_external(self, ramp: Ramp) -> None:
+        """Make the mixer end on the person's value, even if one of our ramp writes crossed theirs."""
+        await asyncio.sleep(REASSERT_DELAY_SEC)
+        for p in ramp.paths:
+            value = self.state.get(p)
+            ours = ramp.sent.get(p, ())
+            if isinstance(value, float) and not any(abs(value - v) <= ECHO_TOLERANCE for v in ours):
+                with contextlib.suppress(MixerNotReady):
+                    log.info("re-sending external value %s=%s after a crossing ramp write", p, value)
+                    self.setd(p, value)
 
     # --- outbound ------------------------------------------------------------
 
@@ -378,6 +396,7 @@ class MixerClient:
 
     def _ramp_send(self, ramp: Ramp, value_display: float) -> None:
         value = ramp.to_value(value_display)
+        ramp.last_sent_at = time.monotonic()
         for p in ramp.paths:
             ramp.sent[p].append(value)
             self.setd(p, value)
